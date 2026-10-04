@@ -111,15 +111,23 @@ jobs:
               },
             });
 
-      - name: Checkout repository
+      - name: Checkout Desktop Repository
         uses: actions/checkout@v7
         with:
-          repository: ${{ inputs.source_repository || github.repository }}
-          ref: ${{ inputs.ref || github.sha }}
+          repository: phu-nam-hai-jsco/task-manager-desktop
+          ref: ${{ (inputs.source_repository == 'phu-nam-hai-jsco/task-manager-desktop' && inputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
-          submodules: recursive
           path: desktop
+
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@v7
+        with:
+          repository: phu-nam-hai-jsco/task-manager-frontend
+          ref: ${{ (inputs.source_repository == 'phu-nam-hai-jsco/task-manager-frontend' && inputs.ref) || 'main' }}
+          fetch-depth: 1
+          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          path: frontend
 
       - name: Install system dependencies (Linux / Tauri)
         run: |
@@ -135,29 +143,16 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
-        with:
-          package_json_file: desktop/package.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: 'pnpm'
-          cache-dependency-path: desktop/pnpm-lock.yaml
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Checkout frontend (cho static export that)
-        uses: actions/checkout@v7
-        with:
-          repository: phu-nam-hai-jsco/task-manager-frontend
-          ref: main
-          fetch-depth: 1
-          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
-          path: frontend
 
       - name: Detect layout
         run: |
@@ -166,13 +161,13 @@ jobs:
           # tauri.conf frontendDist ../frontend/dist (tu desktop/) = workspace/frontend/dist
           echo "FRONTEND_DIST=$GITHUB_WORKSPACE/frontend/dist" >> "$GITHUB_ENV"
 
+      - name: Install dependencies (frontend)
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
       - name: Install dependencies (desktop)
         id: install
         working-directory: ${{ env.DESKTOP_ROOT }}
-        run: pnpm install --frozen-lockfile
-
-      - name: Install dependencies (frontend)
-        working-directory: frontend
         run: pnpm install --frozen-lockfile
 
       - name: Build frontend static export
