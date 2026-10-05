@@ -61,7 +61,7 @@ jobs:
           # Optional: Configure Claude's behavior with CLI arguments
           claude_args: |
             --allowedTools "Bash(bun install),Bash(bun test:*),Bash(bun run format),Bash(bun typecheck),Bash(npm install),Bash(npm run build),Bash(npm run test:*),Bash(npm run lint:*),Bash(pnpm install),Bash(pnpm run build),Bash(pnpm run test:*),Bash(pnpm run lint:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(dotnet restore:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh label list:*),Bash(gh pr edit:*)"
-            --model "claude-sonnet-5.5"
+            --model "claude-sonnet-5-5"
           # --max-turns 10
           #   --system-prompt "Follow our coding standards. Ensure all new code has tests. Use TypeScript for new files."
 
