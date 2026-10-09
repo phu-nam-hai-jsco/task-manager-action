@@ -55,8 +55,12 @@ on:
         description: 'Optional MediatR license key baked into the API image (MEDIATR__LICENSEKEY build arg)'
         required: false
 
+# Group theo image + nguồn build (repo/branch/ref/version/PR): các image khác nhau
+# (server/web/migrator) hoặc lane khác nhau chạy SONG SONG. `github.workflow` trong
+# reusable workflow là tên workflow của caller nên không dùng làm key; chỉ hủy run
+# trùng hệt cùng một build.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
+  group: publish-docker-api-${{ inputs.source_repository || github.repository }}-${{ inputs.branch }}-${{ inputs.ref || github.sha }}-${{ inputs.version }}-${{ inputs.pr_number }}
   cancel-in-progress: true
 
 env:
