@@ -29,7 +29,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: github.sha
+          ref: ${{ github.sha }}
           fetch-depth: 0
           token: ${{ secrets.SUBMODULE_TOKEN }}
 
