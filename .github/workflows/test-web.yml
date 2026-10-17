@@ -142,7 +142,10 @@ jobs:
 
       - name: Run tests with coverage
         id: tests
-        run: pnpm --filter @qlcv/web run test --coverage
+        # Chạy theo thư mục (WEB_ROOT) thay vì `--filter <tên gói>`: đổi tên gói (vd. @qlcv/web →
+        # @task-manager/web) không làm bước test bị bỏ qua êm (pnpm báo "No projects matched" rồi
+        # thoát 0, sau đó thiếu coverage/cobertura-coverage.xml).
+        run: pnpm --dir "$WEB_ROOT" run test --coverage
 
       - name: Code Coverage Summary
         uses: irongut/CodeCoverageSummary@v1.3.0
