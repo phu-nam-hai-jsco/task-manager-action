@@ -16,6 +16,114 @@ jobs:
 
 Khi được gọi, workflow chạy với **context của caller repo** (`github.repository`,
 `context.repo` = caller) — checkout, commit status, báo cáo test đều nhắm vào caller repo.
+## Repo nguồn — .github/workflows/claude.yml
+```
+
+name: Call Central Claude
+
+run-name: Claude request · ${{ github.repository }}
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  dispatch:
+    name: Dispatch Claude request
+    if: >-
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      ) ||
+      (
+        github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)
+      )
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Dispatch to central runner
+        uses: actions/github-script@v9
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_EVENT: ${{ github.event_name }}
+          SOURCE_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          COMMENT_ID: ${{ github.event.comment.id || '' }}
+          REVIEW_ID: ${{ github.event.review.id || '' }}
+          REQUESTED_BY: ${{ github.event.comment.user.login || github.event.review.user.login || github.actor }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const sourceRepo = process.env.SOURCE_REPO || '';
+            const [owner, name, ...extra] = sourceRepo.split('/');
+            const allowedOwners = ['TanNhatCMS', 'phu-nam-hai-jsco'];
+
+            if (!allowedOwners.includes(owner) || !name || extra.length) {
+              throw new Error(`Source repository is not allowed: ${sourceRepo}`);
+            }
+
+            const prNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
+              throw new Error('Invalid pull request number.');
+            }
+
+            const sourceEvent = process.env.SOURCE_EVENT;
+            const sourceAction = process.env.SOURCE_ACTION;
+            const commentId = process.env.COMMENT_ID || '';
+            const reviewId = process.env.REVIEW_ID || '';
+
+            const validEvent =
+              (sourceEvent === 'issue_comment' &&
+                sourceAction === 'created' && commentId) ||
+              (sourceEvent === 'pull_request_review_comment' &&
+                sourceAction === 'created' && commentId) ||
+              (sourceEvent === 'pull_request_review' &&
+                sourceAction === 'submitted' && reviewId);
+
+            if (!validEvent) {
+              throw new Error('Unsupported or incomplete source event.');
+            }
+
+            await github.rest.repos.createDispatchEvent({
+              owner: 'phu-nam-hai-jsco',
+              repo: 'claude-runner',
+              event_type: 'claude-request',
+              client_payload: {
+                source_repo: sourceRepo,
+                source_event: sourceEvent,
+                source_action: sourceAction,
+                pr_number: prNumber,
+                comment_id: commentId || null,
+                review_id: reviewId || null,
+                requested_by: process.env.REQUESTED_BY || ''
+              }
+            });
+
+            core.info(`Dispatch sent for ${sourceRepo} PR #${prNumber}.`);
+
+
+```
+
+
 
 ## 🔧 Reusable workflows
 
