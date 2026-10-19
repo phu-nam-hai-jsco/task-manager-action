@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: claude-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  group: claude-${{ github.event.client_payload.source_repo || 'unknown' }}-${{ github.event.client_payload.pr_number || 'N/A' }}
   cancel-in-progress: false
 
 jobs:
@@ -234,7 +234,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Claude Code
-        uses: anthropics/claude-code-base-action@beta
+        uses: anthropics/claude-code-base-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
