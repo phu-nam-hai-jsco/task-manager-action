@@ -43,13 +43,13 @@ on:
         default: ''
     secrets:
       SUBMODULE_TOKEN:
-        description: 'PAT with repo scope to checkout private submodules + main repo'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT with repo scope to checkout private submodules + main repo'
         required: false
       MAIN_REPO_PR_TOKEN:
-        description: 'Optional PAT (contents:write + statuses:write trên caller repo) để set commit status / gửi báo cáo test-report'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] Optional PAT (contents:write + statuses:write trên caller repo) để set commit status / gửi báo cáo test-report'
         required: false
       MAIN_REPO_CHECKOUT_TOKEN:
-        description: 'Optional PAT fallback cho checkout'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] Optional PAT fallback cho checkout'
         required: false
       GIST_TOKEN:
         description: 'Optional PAT để cập nhật badge coverage (gist)'
@@ -72,10 +72,48 @@ jobs:
       MAIN_REPO: ${{ inputs.source_repository || github.repository }}
       STATUS_CONTEXT: Web Test
     steps:
+      # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT.
+      # - read-token: đọc repo nguồn + submodule (contents: read).
+      # - report-token: chỉ repo nguồn; đặt commit status và gửi repository_dispatch.
+      - name: Resolve source repository
+        id: source
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository || github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create read token
+        id: read-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          permission-contents: read
+
+      - name: Create report token
+        id: report-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          repositories: ${{ steps.source.outputs.name }}
+          permission-contents: write
+          permission-statuses: write
       - name: Set pending status on caller repo commit
         if: env.HEAD_SHA != ''
         env:
-          GH_TOKEN: ${{ secrets.MAIN_REPO_PR_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ steps.report-token.outputs.token }}
         run: |
           gh api "repos/$MAIN_REPO/statuses/$HEAD_SHA" \
             -f state=pending -f target_url="$RUN_URL" \
@@ -90,7 +128,7 @@ jobs:
         env:
           COMMENT_ID: ${{ inputs.comment_id }}
         with:
-          github-token: ${{ secrets.MAIN_REPO_PR_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN }}
+          github-token: ${{ steps.report-token.outputs.token }}
           script: |
             const [owner, repo] = process.env.MAIN_REPO.split('/');
             await github.rest.repos.createDispatchEvent({
@@ -112,7 +150,7 @@ jobs:
           repository: ${{ inputs.source_repository || github.repository }}
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 1
-          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          token: ${{ steps.read-token.outputs.token }}
           submodules: recursive
 
       - name: Setup pnpm
@@ -223,7 +261,7 @@ jobs:
       - name: Set final status on caller repo commit
         if: always() && env.HEAD_SHA != ''
         env:
-          GH_TOKEN: ${{ secrets.MAIN_REPO_PR_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ steps.report-token.outputs.token }}
           STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
         run: |
           gh api "repos/$MAIN_REPO/statuses/$HEAD_SHA" \
@@ -242,7 +280,7 @@ jobs:
           COMMENT_ID: ${{ inputs.comment_id }}
           CONCLUSION: ${{ job.status }}
         with:
-          github-token: ${{ secrets.MAIN_REPO_PR_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN }}
+          github-token: ${{ steps.report-token.outputs.token }}
           script: |
             const [owner, repo] = process.env.MAIN_REPO.split('/');
             const fs = require('fs');
