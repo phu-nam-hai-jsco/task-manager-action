@@ -1,74 +1,152 @@
-name: Claude Code
-run-name: "${{ github.workflow }} · ${{ github.event_name }} · #${{ github.event.issue.number || github.event.pull_request.number }} · @${{ github.event.sender.login }}"
+
+name: Claude Code Central Runner
+
+run-name: >-
+  Claude · ${{ github.event.client_payload.source_repo || 'unknown' }} ·
+  PR ${{ github.event.client_payload.pr_number || 'N/A' }}
 
 on:
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-  issues:
-    types: [opened, assigned]
-  pull_request_review:
-    types: [submitted]
+  repository_dispatch:
+    types: [claude-request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    claude-${{ github.event.client_payload.source_repo }}-
+    ${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: false
 
 jobs:
-  claude:
-    if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+  validate:
+    name: Validate request
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+
+    outputs:
+      source_repo: ${{ steps.validate.outputs.source_repo }}
+      owner: ${{ steps.validate.outputs.owner }}
+      pr_number: ${{ steps.validate.outputs.pr_number }}
+      head_sha: ${{ steps.validate.outputs.head_sha }}
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+      - name: Validate dispatch payload
+        id: validate
+        shell: bash
+        env:
+          SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          REQUESTED_BY: ${{ github.event.client_payload.requested_by }}
+        run: |
+          set -euo pipefail
+
+          # Allow only repositories belonging to these two owners.
+          if [[ ! "$SOURCE_REPO" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowlisted."
+            exit 1
+          fi
+
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid PR number."
+            exit 1
+          fi
+
+          OWNER="${SOURCE_REPO%%/*}"
+
+          echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
+          echo "owner=$OWNER" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          # head_sha is resolved from GitHub API in the next job.
+          echo "head_sha=" >> "$GITHUB_OUTPUT"
+
+  claude:
+    name: Run Claude on target repository
+    needs: validate
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
         with:
-          ref: github.sha
-          fetch-depth: 0
-          token: ${{ secrets.SUBMODULE_TOKEN }}
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ needs.validate.outputs.owner }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Get pull request metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ needs.validate.outputs.source_repo }}
+          PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+
+          # Ensure this PR belongs to the requested source repository.
+          API_REPO="$(jq -r '.base.repo.full_name' "$RUNNER_TEMP/pr.json")"
+          HEAD_REPO="$(jq -r '.head.repo.full_name // ""' "$RUNNER_TEMP/pr.json")"
+          HEAD_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+          HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
+          BASE_REF="$(jq -r '.base.ref' "$RUNNER_TEMP/pr.json")"
+
+          if [[ "$API_REPO" != "$SOURCE_REPO" ]]; then
+            echo "::error::PR base repository does not match the requested repository."
+            exit 1
+          fi
+
+          if [[ -z "$HEAD_REPO" || -z "$HEAD_SHA" || -z "$HEAD_REF" ]]; then
+            echo "::error::Could not resolve PR head."
+            exit 1
+          fi
+
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$HEAD_REPO" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.validate.outputs.source_repo }}
+          ref: ${{ steps.pr.outputs.head_sha }}
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 1
+          submodules: recursive
+          persist-credentials: false
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@main
+        uses: anthropics/claude-code-base-action@beta
         with:
-          # Authenticate to the Claude API via Workload Identity Federation
-          # (the workflow's OIDC token is exchanged for a short-lived access
-          # token) instead of a static API key. See docs/setup.md.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are running from a central GitHub Actions workflow.
 
-          # Optional: add custom plugin marketplaces
-          # plugin_marketplaces: "https://github.com/user/marketplace1.git\nhttps://github.com/user/marketplace2.git"
-          # Optional: install Claude Code plugins
-          # Disabled: "code-review@claude-code-plugins" is no longer resolvable in the
-          # default "claude-code-plugins" marketplace, which fails plugin install and
-          # aborts every @claude run (see run 31694477714).
-          # plugins: "code-review@claude-code-plugins\nfeature-dev@claude-code-plugins"
-          # Optional: grant additional permissions (requires corresponding GitHub token permissions)
-          additional_permissions: |
-            actions: read
-          # Optional: Customize the trigger phrase (default: @claude)
-          # trigger_phrase: "/claude"
+            Target repository: ${{ needs.validate.outputs.source_repo }}
+            Pull request: #${{ needs.validate.outputs.pr_number }}
+            Head SHA: ${{ steps.pr.outputs.head_sha }}
+            Head branch: ${{ steps.pr.outputs.head_ref }}
+            Base branch: ${{ steps.pr.outputs.base_ref }}
 
-          # Optional: Trigger when specific user is assigned to an issue
-          assignee_trigger: 'claude-bot'
+            Review the checked-out repository and the target pull request.
+            Inspect repository instructions before making changes.
+            Focus on correctness, security, performance, maintainability,
+            and tests. Make only focused, relevant changes.
+            Run applicable checks when feasible.
 
-          # Optional: Configure Claude's behavior with CLI arguments
+            Do not expose secrets or environment variables.
+            Do not push directly to protected branches.
+            Do not claim tests passed unless they were executed.
           claude_args: |
-            --allowedTools "Bash(bun install),Bash(bun test:*),Bash(bun run format),Bash(bun typecheck),Bash(npm install),Bash(npm run build),Bash(npm run test:*),Bash(npm run lint:*),Bash(pnpm install),Bash(pnpm run build),Bash(pnpm run test:*),Bash(pnpm run lint:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(dotnet restore:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh label list:*),Bash(gh pr edit:*)"
-            --model "claude-sonnet-5-5"
-          # --max-turns 10
-          #   --system-prompt "Follow our coding standards. Ensure all new code has tests. Use TypeScript for new files."
-
-          # Optional: Advanced settings configuration
-          # settings: |
-          #   {
-          #     "env": {
-          #       "NODE_ENV": "test"
-          #     }
-          #   }
+            --max-turns 10
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(bun:*),Bash(npm:*),Bash(pnpm:*),Bash(dotnet:*),Bash(cargo:*),Bash(rustc:*)"
