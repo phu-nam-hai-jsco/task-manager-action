@@ -232,7 +232,7 @@ jobs:
           repository: ${{ needs.validate.outputs.source_repo }}
           ref: ${{ steps.pr.outputs.head_sha }}
           token: ${{ steps.source-token.outputs.token }}
-          fetch-depth: 1
+          fetch-depth: 0
           submodules: recursive
           persist-credentials: false
 
