@@ -177,7 +177,8 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev
+            libjavascriptcoregtk-4.1-dev \
+            gcc-mingw-w64-x86-64
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -226,6 +227,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+          # Target Windows 64-bit (mingw-w64) để biên dịch code cfg(windows) ngay trên Linux.
+          targets: x86_64-pc-windows-gnu
 
       - name: Install cargo-llvm-cov
         if: env.WITH_COVERAGE == 'true'
@@ -260,6 +263,16 @@ jobs:
         run: |
           mkdir -p coverage
           cargo llvm-cov --all-features --cobertura --output-path coverage/desktop-coverage.xml
+
+      # Desktop phát hành trên Windows nhưng runner là Linux: biên dịch + link bộ test cho target
+      # Windows 64-bit (mingw-w64) để bắt lỗi ở code cfg(windows) (vd. windows-native-keyring-store,
+      # webview2-com/windows-core). Chỉ build, không chạy (--no-run): file .exe cần Windows để chạy.
+      - name: Build tests for Windows target (x86_64-pc-windows-gnu)
+        id: tests_win
+        working-directory: ${{ env.DESKTOP_ROOT }}
+        env:
+          RUSTFLAGS: ''
+        run: cargo test --target x86_64-pc-windows-gnu --all-features --no-run
 
       - name: Code Coverage Summary
         if: env.WITH_COVERAGE == 'true'
@@ -315,6 +328,7 @@ jobs:
           INSTALL: ${{ steps.install.outcome }}
           BUILD_UI: ${{ steps.build_ui.outcome }}
           TESTS: ${{ steps.tests_cov.outcome }}
+          TESTS_WIN: ${{ steps.tests_win.outcome }}
         run: |
           icon() { case "$1" in success) echo "✅ Passed";; failure) echo "❌ Failed";; cancelled) echo "🚫 Cancelled";; *) echo "⏭️ Skipped";; esac; }
           [ "$JOB_STATUS" = "success" ] && RESULT="✅ Passed" || RESULT="❌ $JOB_STATUS"
@@ -326,6 +340,7 @@ jobs:
             echo "| Install dependencies | $(icon "$INSTALL") |"
             echo "| Build Tauri UI | $(icon "$BUILD_UI") |"
             echo "| Cargo test (llvm-cov) | $(icon "$TESTS") |"
+            echo "| Build tests (Windows x64) | $(icon "$TESTS_WIN") |"
             echo
             if [ -f code-coverage-results.md ]; then
               sed 's/Code Coverage/Desktop Coverage/g' code-coverage-results.md
