@@ -160,11 +160,21 @@ jobs:
             exit 1
           }
 
+          # author_association phụ thuộc người xem: với app token, thành viên org
+          # có thể bị trả về CONTRIBUTOR/NONE. Nếu không khớp thì kiểm tra quyền
+          # thực tế của tác giả trên repo nguồn.
           case "$ASSOCIATION" in
             OWNER|MEMBER|COLLABORATOR) ;;
             *)
-              echo "::error::Author is not an authorized collaborator."
-              exit 1
+              PERMISSION="$(gh api "repos/$SOURCE_REPO/collaborators/$AUTHOR/permission" \
+                --jq '.permission' 2>/dev/null || true)"
+              case "$PERMISSION" in
+                admin|maintain|write) ;;
+                *)
+                  echo "::error::Author is not an authorized collaborator (association=${ASSOCIATION:-none}, permission=${PERMISSION:-unknown})."
+                  exit 1
+                  ;;
+              esac
               ;;
           esac
 
@@ -300,6 +310,8 @@ jobs:
           SOURCE_REPO: ${{ needs.validate.outputs.source_repo }}
           PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          SOURCE_COMMENT_OUTCOME: ${{ steps.source-comment.outcome }}
+          PR_OUTCOME: ${{ steps.pr.outcome }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           REQUEST_URL: ${{ steps.source-comment.outputs.url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -315,13 +327,26 @@ jobs:
             if [[ -n "$RESULT" ]]; then
               printf '%s\n' "${RESULT:0:60000}"
             else
-              echo "**Claude không tạo được kết quả cho yêu cầu này.**"
+              if [[ "$SOURCE_COMMENT_OUTCOME" != "success" ]]; then
+                FAILED_STEP="xác minh yêu cầu gốc"
+              elif [[ "$PR_OUTCOME" != "success" ]]; then
+                FAILED_STEP="đọc thông tin PR"
+              elif [[ "$CLAUDE_OUTCOME" != "success" ]]; then
+                FAILED_STEP="chạy Claude (trạng thái \`${CLAUDE_OUTCOME:-không xác định}\`)"
+              else
+                FAILED_STEP="đọc kết quả của Claude (không có nội dung trả về)"
+              fi
+              echo "**Claude không chạy được yêu cầu này.**"
               echo
-              echo "Trạng thái bước chạy Claude: \`${CLAUDE_OUTCOME:-không xác định}\`. Xem log chi tiết ở link bên dưới."
+              echo "Lỗi ở bước: ${FAILED_STEP}. Xem log chi tiết ở link bên dưới."
             fi
             echo
             echo "---"
-            echo "_Yêu cầu: ${REQUEST_URL:-không rõ} · [Xem job](${RUN_URL})_"
+            if [[ -n "$REQUEST_URL" ]]; then
+              echo "_Yêu cầu: ${REQUEST_URL} · [Xem job](${RUN_URL})_"
+            else
+              echo "_[Xem job](${RUN_URL})_"
+            fi
           } > "$RUNNER_TEMP/comment.md"
 
           gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" \
