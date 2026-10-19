@@ -105,7 +105,7 @@ jobs:
 
             await github.rest.repos.createDispatchEvent({
               owner: 'phu-nam-hai-jsco',
-              repo: 'claude-runner',
+              repo: 'task-manager-action',
               event_type: 'claude-request',
               client_payload: {
                 source_repo: sourceRepo,
