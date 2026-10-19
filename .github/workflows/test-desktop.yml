@@ -61,13 +61,8 @@ permissions:
 jobs:
   test:
     name: Run Tests
-    # Windows: bản phát hành desktop chạy trên Windows (kho khoá = Credential Manager), nên test ở đây.
-    runs-on: windows-latest
-    timeout-minutes: 60
-    # Các bước `run:` dùng cú pháp bash (Git Bash có sẵn trên runner Windows).
-    defaults:
-      run:
-        shell: bash
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       PR_NUMBER: ${{ inputs.pr_number }}
       HEAD_SHA: ${{ inputs.ref }}
@@ -172,7 +167,17 @@ jobs:
           token: ${{ steps.read-token.outputs.token }}
           path: frontend
 
-      # Windows: WebView2 và toolchain MSVC có sẵn trên runner, không cần cài thêm thư viện hệ thống.
+      - name: Install system dependencies (Linux / Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -256,53 +261,28 @@ jobs:
           mkdir -p coverage
           cargo llvm-cov --all-features --cobertura --output-path coverage/desktop-coverage.xml
 
-      # irongut/CodeCoverageSummary là Docker action nên không chạy được trên runner Windows:
-      # tự dựng báo cáo markdown từ Cobertura (cùng định dạng, ngưỡng 50/75) để PR report dùng lại.
       - name: Code Coverage Summary
+        if: env.WITH_COVERAGE == 'true'
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: ${{ env.DESKTOP_ROOT }}/coverage/desktop-coverage.xml
+          badge: true
+          fail_below_min: false
+          format: markdown
+          hide_branch_rate: false
+          hide_complexity: true
+          indicators: true
+          output: both
+          thresholds: '50 75'
+
+      - name: Extract coverage percentage
         id: coverage
         if: env.WITH_COVERAGE == 'true'
         run: |
-          python - "$DESKTOP_ROOT/coverage/desktop-coverage.xml" <<'PY'
-          import os, sys
-          import xml.etree.ElementTree as ET
-
-          LOW, HIGH = 50, 75
-
-          def health(pct):
-              return '✔' if pct >= HIGH else ('➖' if pct >= LOW else '❌')
-
-          root = ET.parse(sys.argv[1]).getroot()
-          total_pct = float(root.get('line-rate', '0')) * 100
-          covered, valid = 0, 0
-          rows = []
-          for pkg in root.iter('package'):
-              lines = [l for l in pkg.iter('line')]
-              valid_p = len(lines)
-              covered_p = sum(1 for l in lines if int(l.get('hits', '0')) > 0)
-              covered += covered_p
-              valid += valid_p
-              pct = (covered_p / valid_p * 100) if valid_p else 0
-              rows.append((pkg.get('name', ''), pct))
-          # Ưu tiên số liệu tổng của file; nếu thiếu thì dùng tổng các package.
-          if root.get('lines-valid'):
-              covered, valid = int(root.get('lines-covered', covered)), int(root.get('lines-valid', valid))
-          pct_int = int(total_pct)
-          color = 'success' if total_pct >= HIGH else ('yellow' if total_pct >= LOW else 'critical')
-          out = [
-              f'![Code Coverage](https://img.shields.io/badge/Code%20Coverage-{pct_int}%25-{color}?style=flat)',
-              '',
-              'Package | Line Rate | Health',
-              '-------- | --------- | ------',
-          ]
-          for name, pct in sorted(rows):
-              out.append(f'{name} | {int(pct)}% | {health(pct)}')
-          out.append(f'**Summary** | **{pct_int}%** ({covered} / {valid}) | {health(total_pct)}')
-          with open('code-coverage-results.md', 'w', encoding='utf-8') as f:
-              f.write('\n'.join(out) + '\n')
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
-              f.write(f'percentage={total_pct:.1f}\n')
-          print(f'Desktop Coverage: {total_pct:.1f}%')
-          PY
+          COVERAGE=$(grep -oP 'line-rate="\K[^"]+' "$DESKTOP_ROOT/coverage/desktop-coverage.xml" | head -1)
+          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc | xargs printf "%.1f")
+          echo "percentage=${COVERAGE_PCT}" >> $GITHUB_OUTPUT
+          echo "Desktop Coverage: ${COVERAGE_PCT}%"
 
       - name: Update coverage badge (Gist)
         if: inputs.ref == 'main' && inputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
