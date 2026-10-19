@@ -271,5 +271,5 @@ jobs:
             10. Never claim a test passed unless it actually ran.
 
           claude_args: |
-            --max-turns 10
+            --model "claude-sonnet-5-5"
             --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(bun:*),Bash(npm:*),Bash(pnpm:*),Bash(dotnet:*),Bash(cargo:*),Bash(rustc:*)"
