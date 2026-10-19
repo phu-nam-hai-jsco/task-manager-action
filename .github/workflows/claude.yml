@@ -115,7 +115,7 @@ jobs:
           echo "head_repo=$HEAD_REPO" >> "$GITHUB_OUTPUT"
 
       - name: Checkout target repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ needs.validate.outputs.source_repo }}
           ref: ${{ steps.pr.outputs.head_sha }}
