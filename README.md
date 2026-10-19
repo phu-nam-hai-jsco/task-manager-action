@@ -17,7 +17,7 @@ jobs:
 Khi được gọi, workflow chạy với **context của caller repo** (`github.repository`,
 `context.repo` = caller) — checkout, commit status, báo cáo test đều nhắm vào caller repo.
 ## Repo nguồn — .github/workflows/claude.yml
-```
+```yaml
 
 name: Call Central Claude
 
