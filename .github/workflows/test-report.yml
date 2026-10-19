@@ -1,0 +1,129 @@
+# =============================================================================
+# Test Report — reusable workflow (workflow_call)
+# =============================================================================
+# Nhận báo cáo test do task-manager-action gửi về repo gọi (repository_dispatch 'test-report') rồi
+# đăng lên PR của chính repo gọi: reaction 🚀 khi bắt đầu, sticky comment hoặc quote-reply + 👍/👎 khi xong.
+#
+# Dùng trong ci-dispatcher.yml của từng repo:
+#
+#   report:
+#     if: github.event_name == 'repository_dispatch'
+#     permissions:
+#       contents: read
+#       issues: write
+#       pull-requests: write
+#     uses: phu-nam-hai-jsco/task-manager-action/.github/workflows/test-report.yml@main
+#
+# Khi được gọi, workflow chạy với context của repo gọi: `github.repository`, `github.token`
+# (GITHUB_TOKEN của repo gọi) và `github.event.client_payload` đều là của repo gọi, nên comment và
+# reaction được đăng bằng github-actions[bot] của repo gọi. GITHUB_TOKEN chỉ có quyền mà job gọi
+# cấp (khối `permissions` ở trên), reusable workflow không tự nâng thêm được.
+#
+# client_payload:
+#   stage       'started' (action bắt đầu chạy → 🚀) | 'completed' (kết quả, mặc định)
+#   pr_number   PR nhận báo cáo
+#   comment_id  comment lệnh $test-*, rỗng khi chạy tự động (sticky comment)
+#   header      sticky key, conclusion (job.status bên action), body (markdown), run_url
+# =============================================================================
+name: Test Report
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'runs-on dạng JSON: "ubuntu-latest" (mặc định) hoặc ["self-hosted","label"]'
+        type: string
+        required: false
+        default: '"ubuntu-latest"'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  report:
+    name: Post test report
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 5
+    env:
+      STAGE: ${{ github.event.client_payload.stage || 'completed' }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      COMMENT_ID: ${{ github.event.client_payload.comment_id }}
+      HEADER: ${{ github.event.client_payload.header }}
+      CONCLUSION: ${{ github.event.client_payload.conclusion }}
+      REMOTE_RUN_URL: ${{ github.event.client_payload.run_url }}
+
+    steps:
+      - name: Validate payload
+        run: |
+          # Chỉ nhận giá trị hợp lệ — payload đến từ repo khác
+          echo "$STAGE" | grep -qE '^(started|completed)$' || { echo "::error::stage không hợp lệ: '$STAGE'"; exit 1; }
+          echo "$PR_NUMBER" | grep -qE '^[0-9]+$' || { echo "::error::pr_number không hợp lệ: '$PR_NUMBER'"; exit 1; }
+          [ -z "$COMMENT_ID" ] || echo "$COMMENT_ID" | grep -qE '^[0-9]+$' || { echo "::error::comment_id không hợp lệ"; exit 1; }
+          echo "$HEADER" | grep -qE '^[a-z0-9-]+$' || { echo "::error::header không hợp lệ: '$HEADER'"; exit 1; }
+          echo "$REMOTE_RUN_URL" | grep -qE '^(https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+)?$' \
+            || { echo "::error::run_url không hợp lệ"; exit 1; }
+          echo "✅ $STAGE · PR #$PR_NUMBER · comment ${COMMENT_ID:-—} · $HEADER · ${CONCLUSION:-—}"
+
+      # task-manager-action đã bắt đầu chạy → 🚀 vào comment lệnh
+      - name: React 🚀 (started)
+        if: env.STAGE == 'started' && env.COMMENT_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=rocket --silent
+          COMMENT_URL="$GITHUB_SERVER_URL/$REPO/pull/$PR_NUMBER#issuecomment-$COMMENT_ID"
+          {
+            echo "### 🚀 $HEADER — task-manager-action đã bắt đầu chạy"
+            echo
+            echo "- Comment lệnh: [$COMMENT_URL]($COMMENT_URL)"
+            [ -n "$REMOTE_RUN_URL" ] && echo "- Run task-manager-action: [$REMOTE_RUN_URL]($REMOTE_RUN_URL)"
+            true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write report
+        if: env.STAGE == 'completed'
+        env:
+          BODY: ${{ github.event.client_payload.body }}
+        run: printf '%s\n' "$BODY" > report.md
+
+      # Chạy tự động (PR push / ready_for_review) → sticky comment theo header
+      - name: Sticky comment
+        if: env.STAGE == 'completed' && env.COMMENT_ID == ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          number: ${{ env.PR_NUMBER }}
+          header: ${{ env.HEADER }}
+          recreate: true
+          path: report.md
+
+      # Lệnh từ comment $test-* → quote-reply comment lệnh + 👍/👎
+      - name: Reply to command comment
+        if: env.STAGE == 'completed' && env.COMMENT_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          COMMENT_URL="$GITHUB_SERVER_URL/$REPO/pull/$PR_NUMBER#issuecomment-$COMMENT_ID"
+          QUOTE=$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" --jq .body | tr -d '\r' | sed 's/^/> /') || QUOTE=""
+          {
+            [ -n "$QUOTE" ] && printf '%s\n\n' "$QUOTE"
+            cat report.md
+          } > reply.md
+          REPLY_URL=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@reply.md --jq .html_url)
+
+          if [ "$CONCLUSION" = "success" ]; then REACTION="+1"; else REACTION="-1"; fi
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            -f content="$REACTION" --silent \
+            || echo "::warning::Không thể thả reaction $REACTION vào comment $COMMENT_ID"
+
+          {
+            echo "### 🧪 $HEADER — ${CONCLUSION:-unknown}"
+            echo
+            echo "- Comment lệnh: [$COMMENT_URL]($COMMENT_URL)"
+            echo "- Kết quả: [$REPLY_URL]($REPLY_URL)"
+            [ -n "$REMOTE_RUN_URL" ] && echo "- Run task-manager-action: [$REMOTE_RUN_URL]($REMOTE_RUN_URL)"
+            true
+          } >> "$GITHUB_STEP_SUMMARY"

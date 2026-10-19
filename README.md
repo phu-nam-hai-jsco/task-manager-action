@@ -133,6 +133,7 @@ jobs:
 | `test-dotnet.yml`             | .NET build & test + coverage (`server/`) → báo cáo PR               | như trên                                        |
 | `test-desktop.yml`            | Tauri UI build + cargo llvm-cov (`desktop/`) → báo cáo PR           | như trên                                        |
 | `test-database.yml`           | Prisma migrate + seed trên MariaDB (`database/`) → báo cáo PR       | `ref`, `pr_number`, `comment_id`, `caller_run_url` |
+| `test-report.yml`             | Nhận `test-report` về repo gọi và đăng comment / reaction 🚀 👍/👎 lên PR | `runner` (JSON, mặc định `"ubuntu-latest"`)     |
 | `publish-docker-api.yml`      | Build & push image `qlcv-api` từ `docker/dotnet/Dockerfile`         | `ref`, `version`, `branch`                      |
 | `publish-docker-web.yml`      | Build & push image `qlcv-web` (nginx + static export) từ `docker/nextjs/Dockerfile` | `ref`, `version`, `branch`, `env_json` |
 | `publish-docker-migrator.yml` | Build & push image `qlcv-db-migrator` từ `docker/db-migrator/Dockerfile` | `ref`, `version`, `branch`                 |
@@ -162,10 +163,25 @@ Inputs chung: `ref` (commit/nhánh cần checkout — rỗng → `github.sha`), 
 
 1. Caller gọi workflow với `pr_number` (+ `comment_id` nếu chạy từ lệnh `$test-*`).
 2. Ngay khi bắt đầu (chỉ với lệnh từ comment): gửi dispatch event `test-report` (`stage: started`)
-   về caller repo → `test-report.yml` phía caller thả 🚀 vào comment lệnh.
+   về caller repo → job `report` trong `ci-dispatcher.yml` của caller thả 🚀 vào comment lệnh.
 3. Kết thúc (kể cả fail): set commit status trên caller repo + gửi dispatch event
    `test-report` (`stage: completed`, kèm `body` markdown) → caller đăng comment
    (quote-reply comment lệnh + 👍/👎, hoặc sticky comment với GitHub Token `github-actions[bot]`).
+
+Phía nhận báo cáo dùng chung reusable workflow `test-report.yml` của repo này (repo public nên mọi repo
+gọi được). Mỗi repo chỉ khai báo job gọi trong `ci-dispatcher.yml` và **phải cấp quyền ở job gọi**, vì
+GITHUB_TOKEN của reusable workflow là của repo gọi và không tự có thêm quyền:
+
+```yaml
+  report:
+    if: github.event_name == 'repository_dispatch'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: phu-nam-hai-jsco/task-manager-action/.github/workflows/test-report.yml@main
+    # runner self-hosted: with: { runner: '["self-hosted","label"]' }
+```
 
 Job summary có link tới PR và comment lệnh. Workflow reusable **không** comment trực tiếp
 bằng PAT (comment sẽ mang tên user → ci-dispatcher coi là người).
