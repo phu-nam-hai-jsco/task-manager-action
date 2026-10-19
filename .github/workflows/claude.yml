@@ -23,6 +23,7 @@ jobs:
 
     outputs:
       source_repo: ${{ steps.validate.outputs.source_repo }}
+      repo_name: ${{ steps.validate.outputs.repo_name }}
       owner: ${{ steps.validate.outputs.owner }}
       pr_number: ${{ steps.validate.outputs.pr_number }}
       source_event: ${{ steps.validate.outputs.source_event }}
@@ -82,6 +83,7 @@ jobs:
 
           echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
           echo "owner=${SOURCE_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo_name=${SOURCE_REPO#*/}" >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "source_event=$SOURCE_EVENT" >> "$GITHUB_OUTPUT"
           echo "source_action=$SOURCE_ACTION" >> "$GITHUB_OUTPUT"
@@ -235,6 +237,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Claude Code
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -272,4 +275,54 @@ jobs:
 
           claude_args: |
             --model "claude-sonnet-5-5"
-            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(bun:*),Bash(npm:*),Bash(pnpm:*),Bash(dotnet:*),Bash(cargo:*),Bash(rustc:*)"
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git submodule:*),Bash(git -C:*),Bash(bun:*),Bash(npm:*),Bash(pnpm:*),Bash(dotnet:*),Bash(cargo:*),Bash(rustc:*)"
+
+      # claude-code-action chạy ở chế độ agent cho repository_dispatch nên không
+      # tự đăng kết quả lên PR nguồn. Đăng lại bằng token riêng có quyền ghi,
+      # chỉ tạo sau khi Claude chạy xong và chỉ giới hạn ở repo nguồn.
+      - name: Create PR comment token
+        id: comment-token
+        if: ${{ always() && needs.validate.result == 'success' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ needs.validate.outputs.owner }}
+          repositories: ${{ needs.validate.outputs.repo_name }}
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Post result to source PR
+        if: ${{ always() && steps.comment-token.outcome == 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.comment-token.outputs.token }}
+          SOURCE_REPO: ${{ needs.validate.outputs.source_repo }}
+          PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          REQUEST_URL: ${{ steps.source-comment.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          RESULT=""
+          if [[ "$CLAUDE_OUTCOME" == "success" && -n "$EXECUTION_FILE" && -f "$EXECUTION_FILE" ]]; then
+            RESULT="$(jq -r '[.[] | select(.type == "result")] | last | .result // ""' "$EXECUTION_FILE")"
+          fi
+
+          {
+            if [[ -n "$RESULT" ]]; then
+              printf '%s\n' "${RESULT:0:60000}"
+            else
+              echo "**Claude không tạo được kết quả cho yêu cầu này.**"
+              echo
+              echo "Trạng thái bước chạy Claude: \`${CLAUDE_OUTCOME:-không xác định}\`. Xem log chi tiết ở link bên dưới."
+            fi
+            echo
+            echo "---"
+            echo "_Yêu cầu: ${REQUEST_URL:-không rõ} · [Xem job](${RUN_URL})_"
+          } > "$RUNNER_TEMP/comment.md"
+
+          gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" \
+            --body-file "$RUNNER_TEMP/comment.md"
