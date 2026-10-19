@@ -13,7 +13,8 @@
 #
 # Reusable được gọi với source_repository chỉ rõ để checkout đúng repo nguồn
 # (mặc định của reusable là repo caller — dispatcher luôn truyền tường minh).
-# Secrets: dùng SUBMODULE_TOKEN cho cả checkout lẫn status/comment (org secret).
+# Token: GitHub App (APP_CLIENT_ID + APP_PRIVATE_KEY) tạo token ngắn hạn cho checkout,
+# commit status và gửi báo cáo — không dùng PAT.
 # =============================================================================
 
 name: Test Dispatcher
@@ -76,6 +77,33 @@ jobs:
       caller_run_url: ${{ steps.ref.outputs.caller_run_url }}
       trigger: ${{ steps.ref.outputs.trigger }}
     steps:
+      # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT:
+      # chỉ cần quyền đọc để resolve head của branch.
+      - name: Resolve source repository
+        id: source
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || inputs.source_repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create read token
+        id: read-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          permission-contents: read
+
       - name: Resolve
         id: ref
         uses: actions/github-script@v9
@@ -88,7 +116,7 @@ jobs:
           CALLER_RUN_URL: ${{ github.event.client_payload.caller_run_url || '' }}
           TRIGGER: ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action || 'manual' }}
         with:
-          github-token: ${{ secrets.SUBMODULE_TOKEN }}
+          github-token: ${{ steps.read-token.outputs.token }}
           script: |
             const [sOwner, sRepo] = process.env.SOURCE.split('/');
             let ref = process.env.REF_IN;
