@@ -58,7 +58,7 @@ jobs:
 
     services:
       mariadb:
-        image: mariadb:12.3.2
+        image: mariadb:13.0.2
         env:
           MARIADB_ROOT_PASSWORD: test
           MARIADB_DATABASE: test_qlcv
