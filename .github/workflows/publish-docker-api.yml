@@ -27,7 +27,7 @@ on:
         required: false
         default: 'workflow_call'
       version:
-        description: 'Version to tag the image with (fallback: server/version.build.yml → server/build/api.build.yml → 1.0.0-dev)'
+        description: 'Version to tag the image with (fallback: server/package.json → server/version.build.yml → server/build/api.build.yml → 1.0.0-dev)'
         type: string
         required: false
         default: ''
@@ -79,14 +79,52 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      # Build API chỉ cần 2 repo: server (mã nguồn .NET) và docker (Dockerfile + entrypoint).
+      # Không checkout repo chính task-manager + submodules recursive (frontend/desktop/database... không dùng).
+      # Vẫn giữ đúng commit mà repo chính đã ghim cho 2 submodule tại `ref` (đọc qua Contents API).
+      - name: Resolve pinned commits of server + docker
+        id: pins
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          SRC_REPO: ${{ inputs.source_repository || github.repository }}
+          SRC_REF: ${{ inputs.ref || github.sha }}
+        run: |
+          for m in server docker; do
+            info=$(gh api "repos/${SRC_REPO}/contents/${m}?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
+            type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
+            if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
+              echo "::error::'${m}' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
+              exit 1
+            fi
+            repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
+            echo "${m}_repo=${repo}" >> "$GITHUB_OUTPUT"
+            echo "${m}_sha=${sha}" >> "$GITHUB_OUTPUT"
+            echo "${m}: ${repo}@${sha}"
+          done
+
+      - name: Checkout server
         uses: actions/checkout@v7
         with:
-          repository: ${{ inputs.source_repository || github.repository }}
-          ref: ${{ inputs.ref || github.sha }}
+          repository: ${{ steps.pins.outputs.server_repo }}
+          ref: ${{ steps.pins.outputs.server_sha }}
+          path: server
           fetch-depth: 1
+          persist-credentials: false
           token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
-          submodules: recursive
+
+      - name: Checkout docker
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.pins.outputs.docker_repo }}
+          ref: ${{ steps.pins.outputs.docker_sha }}
+          path: docker
+          fetch-depth: 1
+          persist-credentials: false
+          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+
+      # Context build là thư mục gốc workspace: loại .git của 2 repo con khỏi context
+      - name: Exclude .git from build context
+        run: printf '**/.git\n' > .dockerignore
 
       - name: Resolve version
         id: version
@@ -95,6 +133,10 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             RAW_VERSION="${{ inputs.version }}"
             echo "Source: workflow input"
+          elif [ -f "server/package.json" ] && [ -n "$(node -p "require('./server/package.json').version || ''" 2>/dev/null)" ]; then
+            # Nguồn chuẩn của backend (dotnet -p:Version + ENV QLCV__Version trong image)
+            RAW_VERSION=$(node -p "require('./server/package.json').version")
+            echo "Source: server/package.json"
           elif [ -f "server/version.build.yml" ]; then
             RAW_VERSION=$(grep -E '^[[:space:]]*version:' server/version.build.yml | head -n1 | sed -E 's/^[[:space:]]*version:[[:space:]]*["'\'']?([^"'\'']+)["'\'']?/\1/' | tr -d '[:space:]')
             echo "Source: server/version.build.yml"
