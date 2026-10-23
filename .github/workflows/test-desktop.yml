@@ -167,18 +167,32 @@ jobs:
           token: ${{ steps.read-token.outputs.token }}
           path: frontend
 
-      - name: Install system dependencies (Linux / Tauri)
+      # Mirror azure.archive.ubuntu.com đôi khi cực chậm (run 39920827675: ~35 MB mất >10 phút → treo
+      # hết 45 phút). Retry + timeout mỗi kết nối để lỗi mạng lẻ tẻ không kéo cả job.
+      - name: Configure apt (retries / timeouts)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev \
+          sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null <<'EOF'
+          Acquire::Retries "5";
+          Acquire::http::Timeout "30";
+          Acquire::https::Timeout "30";
+          EOF
+
+      # Cache các gói .deb (~180 MB, ~850 MB sau cài) theo danh sách gói: lần sau khỏi tải lại từ mirror.
+      # timeout riêng → nếu mirror kẹt thì fail sau 15 phút thay vì 45.
+      - name: Install system dependencies (Linux / Tauri)
+        timeout-minutes: 15
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev
+            libgtk-3-dev
+            libayatana-appindicator3-dev
+            librsvg2-dev
+            libxdo-dev
+            libsoup-3.0-dev
+            libjavascriptcoregtk-4.1-dev
             gcc-mingw-w64-x86-64
+          version: tauri-desktop-v1
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
