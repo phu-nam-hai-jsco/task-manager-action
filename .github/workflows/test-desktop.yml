@@ -195,6 +195,9 @@ jobs:
             libjavascriptcoregtk-4.1-dev
             gcc-mingw-w64-x86-64
           version: tauri-desktop-v2
+          # Cần chạy postinst: gcc-mingw-w64 tạo symlink x86_64-w64-mingw32-gcc qua update-alternatives
+          # (windres cần gcc này khi build target windows-gnu); mặc định action bỏ qua nên thiếu gcc.
+          execute_install_scripts: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
