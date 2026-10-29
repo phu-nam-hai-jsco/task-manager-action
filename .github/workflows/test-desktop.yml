@@ -179,6 +179,8 @@ jobs:
 
       # Cache các gói .deb (~180 MB, ~850 MB sau cài) theo danh sách gói: lần sau khỏi tải lại từ mirror.
       # timeout riêng → nếu mirror kẹt thì fail sau 15 phút thay vì 45.
+      # Cache key = hash(gói) + version. Cache cũ tauri-desktop-v1 bị lưu rỗng (~0 MB, 6 KB) nên cache hit
+      # mà không cài gói nào → build glib-sys fail "glib-2.0 not found" (run 40804883075). Bump version để bỏ cache hỏng.
       - name: Install system dependencies (Linux / Tauri)
         timeout-minutes: 15
         uses: awalsh128/cache-apt-pkgs-action@v1
@@ -192,7 +194,7 @@ jobs:
             libsoup-3.0-dev
             libjavascriptcoregtk-4.1-dev
             gcc-mingw-w64-x86-64
-          version: tauri-desktop-v1
+          version: tauri-desktop-v2
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
