@@ -2,7 +2,7 @@ name: Test API (.NET)
 # Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
 # run-name: workflow gọi · repo gọi · PR/ref · trigger — nhìn là biết nguồn chạy.
 run-name: >-
-  Test API (.NET) · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-frontend' && 'task-manager-frontend' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-desktop' && 'task-manager-desktop' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-database' && 'task-manager-database' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-docker' && 'task-manager-docker' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) }}
+  Test API (.NET) · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) }}
   · ${{ github.event.client_payload.pr_number != '' && format('PR #{0}', github.event.client_payload.pr_number)
        || github.event.client_payload.branch || inputs.branch || '' }}
   · ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action }}
