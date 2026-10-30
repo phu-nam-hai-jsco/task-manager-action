@@ -1,9 +1,40 @@
 name: Test Desktop (Rust)
 # Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
 # run-name: workflow gọi · repo gọi · PR/ref · trigger — nhìn là biết nguồn chạy.
-run-name: "${{ github.workflow }} · ${{ github.sha }}"
+run-name: >-
+  Test Desktop (Rust) · ${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}
+  · ${{ github.event.client_payload.pr_number != '' && format('PR #{0}', github.event.client_payload.pr_number)
+       || github.event.client_payload.branch || inputs.branch || '' }}
+  · ref ${{ github.event.client_payload.ref || inputs.ref || github.sha }}
+  · ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action }}
 
 on:
+  repository_dispatch:
+    types: [test-desktop]
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: 'Repo chứa source (owner/name)'
+        required: true
+        type: string
+        default: phu-nam-hai-jsco/task-manager
+      ref:
+        description: 'Commit SHA cần test (bỏ trống = head của branch)'
+        required: false
+        type: string
+      branch:
+        description: 'Branch để resolve head khi bỏ trống ref'
+        required: false
+        type: string
+        default: main
+      pr_number:
+        description: 'PR number (tuỳ chọn — cho báo cáo về PR)'
+        required: false
+        type: string
+      comment_id:
+        description: 'Comment id lệnh $test-* (tuỳ chọn)'
+        required: false
+        type: string
   workflow_call:
     inputs:
       ref:
@@ -58,20 +89,93 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: test-desktop-${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}-${{ github.event.client_payload.ref || inputs.ref || github.sha }}
+  cancel-in-progress: false
+
 jobs:
+  resolve:
+    name: Resolve source ref
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      source_repository: ${{ steps.ref.outputs.source_repository }}
+      pr_number: ${{ steps.ref.outputs.pr_number }}
+      comment_id: ${{ steps.ref.outputs.comment_id }}
+      caller_run_url: ${{ steps.ref.outputs.caller_run_url }}
+      trigger: ${{ steps.ref.outputs.trigger }}
+    steps:
+      # Nhận từ repository_dispatch (client_payload), workflow_dispatch hoặc workflow_call (inputs).
+      # Token ngắn hạn từ GitHub App, chỉ cần quyền đọc để resolve head của branch.
+      - name: Resolve source repository
+        id: source
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create read token
+        id: read-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          permission-contents: read
+
+      - name: Resolve
+        id: ref
+        uses: actions/github-script@v9
+        env:
+          SOURCE: ${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}
+          REF_IN: ${{ github.event.client_payload.ref || inputs.ref || '' }}
+          BRANCH: ${{ github.event.client_payload.branch || inputs.branch || 'main' }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
+          COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
+          CALLER_RUN_URL: ${{ github.event.client_payload.caller_run_url || inputs.caller_run_url || '' }}
+          TRIGGER: ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action || 'manual' }}
+        with:
+          github-token: ${{ steps.read-token.outputs.token }}
+          script: |
+            const [sOwner, sRepo] = process.env.SOURCE.split('/');
+            let ref = process.env.REF_IN;
+            if (!ref) {
+              const b = await github.rest.repos.getBranch({
+                owner: sOwner, repo: sRepo, branch: process.env.BRANCH,
+              });
+              ref = b.data.commit.sha;
+              core.info(`Resolved ${process.env.BRANCH} head: ${ref}`);
+            }
+            core.setOutput('ref', ref);
+            core.setOutput('source_repository', process.env.SOURCE);
+            core.setOutput('pr_number', process.env.PR_NUMBER);
+            core.setOutput('comment_id', process.env.COMMENT_ID);
+            core.setOutput('caller_run_url', process.env.CALLER_RUN_URL);
+            core.setOutput('trigger', process.env.TRIGGER);
+
   test:
     name: Run Tests
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      PR_NUMBER: ${{ inputs.pr_number }}
-      HEAD_SHA: ${{ inputs.ref }}
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.resolve.outputs.ref }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       HAS_GIST_TOKEN: ${{ secrets.GIST_TOKEN != '' }}
       # Coverage chỉ cần khi có PR để comment, hoặc khi chạy trên main để cập nhật badge
-      WITH_COVERAGE: ${{ inputs.pr_number != '' || inputs.ref == 'main' }}
+      WITH_COVERAGE: ${{ needs.resolve.outputs.pr_number != '' || needs.resolve.outputs.ref == 'main' }}
       # Caller repo context (reusable workflow chạy với context của caller)
-      MAIN_REPO: ${{ inputs.source_repository || github.repository }}
+      MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: Desktop Test
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: '0'
@@ -84,7 +188,7 @@ jobs:
         id: source
         shell: bash
         env:
-          SOURCE_REPOSITORY: ${{ inputs.source_repository || github.repository }}
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.source_repository || github.repository }}
         run: |
           set -euo pipefail
 
@@ -127,11 +231,11 @@ jobs:
 
       # Lệnh từ comment `$test-*`: báo caller repo đã bắt đầu chạy → test-report.yml thả 🚀
       - name: Notify started
-        if: env.PR_NUMBER != '' && inputs.comment_id != ''
+        if: env.PR_NUMBER != '' && needs.resolve.outputs.comment_id != ''
         continue-on-error: true
         uses: actions/github-script@v9
         env:
-          COMMENT_ID: ${{ inputs.comment_id }}
+          COMMENT_ID: ${{ needs.resolve.outputs.comment_id }}
         with:
           github-token: ${{ steps.report-token.outputs.token }}
           script: |
@@ -153,7 +257,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: phu-nam-hai-jsco/task-manager-desktop
-          ref: ${{ (inputs.source_repository == 'phu-nam-hai-jsco/task-manager-desktop' && inputs.ref) || 'main' }}
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-desktop' && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
           path: desktop
@@ -162,7 +266,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: phu-nam-hai-jsco/task-manager-frontend
-          ref: ${{ (inputs.source_repository == 'phu-nam-hai-jsco/task-manager-frontend' && inputs.ref) || 'main' }}
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-frontend' && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
           path: frontend
@@ -317,7 +421,7 @@ jobs:
           echo "Desktop Coverage: ${COVERAGE_PCT}%"
 
       - name: Update coverage badge (Gist)
-        if: inputs.ref == 'main' && inputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
+        if: needs.resolve.outputs.ref == 'main' && inputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
         uses: schneegans/dynamic-badges-action@v1.9.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -342,8 +446,8 @@ jobs:
         if: always() && env.PR_NUMBER != ''
         env:
           JOB_STATUS: ${{ job.status }}
-          TRIGGER: ${{ inputs.trigger }}
-          CALLER_RUN_URL: ${{ inputs.caller_run_url }}
+          TRIGGER: ${{ needs.resolve.outputs.trigger }}
+          CALLER_RUN_URL: ${{ needs.resolve.outputs.caller_run_url }}
           INSTALL: ${{ steps.install.outcome }}
           BUILD_UI: ${{ steps.build_ui.outcome }}
           TESTS: ${{ steps.tests_cov.outcome }}
@@ -389,7 +493,7 @@ jobs:
         if: always() && env.PR_NUMBER != ''
         uses: actions/github-script@v9
         env:
-          COMMENT_ID: ${{ inputs.comment_id }}
+          COMMENT_ID: ${{ needs.resolve.outputs.comment_id }}
           CONCLUSION: ${{ job.status }}
         with:
           github-token: ${{ steps.report-token.outputs.token }}
