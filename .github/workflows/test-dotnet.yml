@@ -67,7 +67,7 @@ on:
         required: false
         default: ''
       coverage_gist_id:
-        description: 'Gist id để cập nhật badge coverage (chỉ chạy trên main)'
+        description: '[Không còn dùng — badge do update-coverage-badge.yml cập nhật, lấy Gist id từ biến repo COVERAGE_GIST_ID]'
         type: string
         required: false
         default: ''
@@ -82,7 +82,7 @@ on:
         description: '[Không còn dùng — đã thay bằng GitHub App token] PAT dự phòng tuỳ chọn cho checkout'
         required: false
       GIST_TOKEN:
-        description: 'PAT tuỳ chọn để cập nhật badge coverage (gist)'
+        description: '[Không còn dùng — chuyển sang update-coverage-badge.yml] PAT tuỳ chọn để cập nhật badge coverage (gist)'
         required: false
 
 permissions:
@@ -103,6 +103,7 @@ jobs:
       comment_id: ${{ steps.ref.outputs.comment_id }}
       caller_run_url: ${{ steps.ref.outputs.caller_run_url }}
       trigger: ${{ steps.ref.outputs.trigger }}
+      is_main: ${{ steps.ref.outputs.is_main }}
     steps:
       # Nhận từ repository_dispatch (client_payload), workflow_dispatch hoặc workflow_call (inputs).
       # Token ngắn hạn từ GitHub App, chỉ cần quyền đọc để resolve head của branch.
@@ -154,7 +155,26 @@ jobs:
               ref = b.data.commit.sha;
               core.info(`Resolved ${process.env.BRANCH} head: ${ref}`);
             }
+            // Caller có thể truyền tên branch/tag thay vì SHA → đổi sang SHA để so sánh và đặt commit status
+            if (!/^[0-9a-f]{40}$/i.test(ref)) {
+              try {
+                const c = await github.rest.repos.getCommit({ owner: sOwner, repo: sRepo, ref });
+                core.info(`Resolved ${ref} -> ${c.data.sha}`);
+                ref = c.data.sha;
+              } catch (e) {
+                core.warning(`Không resolve được ref '${ref}' thành SHA: ${e.message}`);
+              }
+            }
+            // Đang test head của main? (ref luôn là SHA nên không so sánh được với chuỗi 'main')
+            let isMain = false;
+            try {
+              const m = await github.rest.repos.getBranch({ owner: sOwner, repo: sRepo, branch: 'main' });
+              isMain = m.data.commit.sha === ref;
+            } catch (e) {
+              core.warning(`Không lấy được head của main: ${e.message}`);
+            }
             core.setOutput('ref', ref);
+            core.setOutput('is_main', String(isMain));
             core.setOutput('source_repository', process.env.SOURCE);
             core.setOutput('pr_number', process.env.PR_NUMBER);
             core.setOutput('comment_id', process.env.COMMENT_ID);
@@ -170,7 +190,6 @@ jobs:
       PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
       HEAD_SHA: ${{ needs.resolve.outputs.ref }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      HAS_GIST_TOKEN: ${{ secrets.GIST_TOKEN != '' }}
       # Caller repo context (reusable workflow chạy với context của caller)
       MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: .NET Test
@@ -311,18 +330,25 @@ jobs:
           echo "percentage=${COVERAGE_PCT}" >> $GITHUB_OUTPUT
           echo "Dotnet Coverage: ${COVERAGE_PCT}%"
 
-      - name: Update coverage badge (Gist)
-        if: needs.resolve.outputs.ref == 'main' && inputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
-        uses: schneegans/dynamic-badges-action@v1.9.0
+      # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
+      # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
+      - name: Save coverage badge data
+        if: needs.resolve.outputs.is_main == 'true'
+        env:
+          PERCENTAGE: ${{ steps.coverage.outputs.percentage }}
+        run: |
+          mkdir -p badge
+          jq -n --arg filename 'dotnet-coverage.json' --arg label 'Dotnet coverage' --arg percentage "$PERCENTAGE" \
+            '{filename: $filename, label: $label, percentage: $percentage}' > badge/badge.json
+
+      - name: Upload coverage badge data
+        if: needs.resolve.outputs.is_main == 'true'
+        uses: actions/upload-artifact@v7
         with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ inputs.coverage_gist_id }}
-          filename: dotnet-coverage.json
-          label: Dotnet coverage
-          message: '${{ steps.coverage.outputs.percentage }}%'
-          valColorRange: ${{ steps.coverage.outputs.percentage }}
-          minColorRange: 50
-          maxColorRange: 90
+          name: coverage-badge
+          path: badge/badge.json
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Upload test results
         if: always()
