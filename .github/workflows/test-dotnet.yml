@@ -63,7 +63,7 @@ on:
         required: false
         default: ''
       source_repository:
-        description: 'Repo chứa source cần test (mặc định: repo caller; dispatcher truyền source)'
+        description: 'Repo chứa source cần test (mặc định: repo gọi)'
         type: string
         required: false
         default: ''
