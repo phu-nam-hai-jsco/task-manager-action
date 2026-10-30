@@ -5,7 +5,6 @@ run-name: >-
   Test Database · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-frontend' && 'task-manager-frontend' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-desktop' && 'task-manager-desktop' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-database' && 'task-manager-database' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-docker' && 'task-manager-docker' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) }}
   · ${{ github.event.client_payload.pr_number != '' && format('PR #{0}', github.event.client_payload.pr_number)
        || github.event.client_payload.branch || inputs.branch || '' }}
-  · ref ${{ github.event.client_payload.ref || inputs.ref || github.sha }}
   · ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action }}
 
 on:
