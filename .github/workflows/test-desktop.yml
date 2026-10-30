@@ -103,6 +103,8 @@ jobs:
       comment_id: ${{ steps.ref.outputs.comment_id }}
       caller_run_url: ${{ steps.ref.outputs.caller_run_url }}
       trigger: ${{ steps.ref.outputs.trigger }}
+      is_main: ${{ steps.ref.outputs.is_main }}
+      coverage_gist_id: ${{ steps.ref.outputs.coverage_gist_id }}
     steps:
       # Nhận từ repository_dispatch (client_payload), workflow_dispatch hoặc workflow_call (inputs).
       # Token ngắn hạn từ GitHub App, chỉ cần quyền đọc để resolve head của branch.
@@ -142,6 +144,7 @@ jobs:
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           CALLER_RUN_URL: ${{ github.event.client_payload.caller_run_url || inputs.caller_run_url || '' }}
           TRIGGER: ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action || 'manual' }}
+          COVERAGE_GIST_ID: ${{ github.event.client_payload.coverage_gist_id || inputs.coverage_gist_id || '' }}
         with:
           github-token: ${{ steps.read-token.outputs.token }}
           script: |
@@ -154,7 +157,17 @@ jobs:
               ref = b.data.commit.sha;
               core.info(`Resolved ${process.env.BRANCH} head: ${ref}`);
             }
+            // Đang test head của main? (ref luôn là SHA nên không so sánh được với chuỗi 'main')
+            let isMain = false;
+            try {
+              const m = await github.rest.repos.getBranch({ owner: sOwner, repo: sRepo, branch: 'main' });
+              isMain = m.data.commit.sha === ref;
+            } catch (e) {
+              core.warning(`Không lấy được head của main: ${e.message}`);
+            }
             core.setOutput('ref', ref);
+            core.setOutput('is_main', String(isMain));
+            core.setOutput('coverage_gist_id', process.env.COVERAGE_GIST_ID);
             core.setOutput('source_repository', process.env.SOURCE);
             core.setOutput('pr_number', process.env.PR_NUMBER);
             core.setOutput('comment_id', process.env.COMMENT_ID);
@@ -172,7 +185,7 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       HAS_GIST_TOKEN: ${{ secrets.GIST_TOKEN != '' }}
       # Coverage chỉ cần khi có PR để comment, hoặc khi chạy trên main để cập nhật badge
-      WITH_COVERAGE: ${{ needs.resolve.outputs.pr_number != '' || needs.resolve.outputs.ref == 'main' }}
+      WITH_COVERAGE: ${{ needs.resolve.outputs.pr_number != '' || needs.resolve.outputs.is_main == 'true' }}
       # Caller repo context (reusable workflow chạy với context của caller)
       MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: Desktop Test
@@ -420,11 +433,11 @@ jobs:
           echo "Desktop Coverage: ${COVERAGE_PCT}%"
 
       - name: Update coverage badge (Gist)
-        if: needs.resolve.outputs.ref == 'main' && inputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
+        if: needs.resolve.outputs.is_main == 'true' && needs.resolve.outputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
         uses: schneegans/dynamic-badges-action@v1.9.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ inputs.coverage_gist_id }}
+          gistID: ${{ needs.resolve.outputs.coverage_gist_id }}
           filename: desktop-coverage.json
           label: Desktop coverage
           message: '${{ steps.coverage.outputs.percentage }}%'
