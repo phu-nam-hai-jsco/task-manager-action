@@ -38,27 +38,27 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref of the caller repo to checkout/test/build'
+        description: 'Git ref của repo gọi cần checkout/test/build'
         type: string
         required: false
         default: ''
       pr_number:
-        description: 'PR number for report/comment flows'
+        description: 'Số PR cho luồng báo cáo/comment'
         type: string
         required: false
         default: ''
       comment_id:
-        description: 'Command comment id for $test-* flows'
+        description: 'Id comment lệnh cho luồng $test-*'
         type: string
         required: false
         default: ''
       trigger:
-        description: 'Human-readable trigger label'
+        description: 'Nhãn trigger dễ đọc'
         type: string
         required: false
         default: 'workflow_call'
       caller_run_url:
-        description: 'Caller workflow run URL (shown in the report footer)'
+        description: 'URL run của workflow gọi (hiện ở chân báo cáo)'
         type: string
         required: false
         default: ''
@@ -69,13 +69,13 @@ on:
         default: ''
     secrets:
       SUBMODULE_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT with repo scope to checkout private submodules + main repo'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT quyền repo để checkout submodule private + repo chính'
         required: false
       MAIN_REPO_PR_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] Optional PAT (contents:write + statuses:write trên caller repo) để set commit status / gửi báo cáo test-report'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT tuỳ chọn (contents:write + statuses:write trên repo gọi) để đặt commit status / gửi báo cáo test-report'
         required: false
       MAIN_REPO_CHECKOUT_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] Optional PAT fallback cho checkout'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT dự phòng tuỳ chọn cho checkout'
         required: false
 
 permissions:
