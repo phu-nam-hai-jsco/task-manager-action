@@ -1,0 +1,103 @@
+# =============================================================================
+# Cập nhật badge coverage (Gist)
+# =============================================================================
+# Chạy sau khi test-web / test-dotnet / test-desktop hoàn thành (workflow_run).
+# Các workflow test chỉ lưu artifact `coverage-badge` (badge.json) khi test đúng
+# head của main và thành công; workflow này tải artifact đó rồi ghi lên Gist.
+# Không có artifact (test PR, test branch khác) → bỏ qua, không lỗi.
+#
+# Cấu hình repo:
+#   - secret   GIST_TOKEN        : PAT quyền gist
+#   - variable COVERAGE_GIST_ID  : id của Gist chứa các file *-coverage.json
+# =============================================================================
+
+name: Update Coverage Badge
+run-name: "Update Coverage Badge · ${{ github.event.workflow_run.name }}"
+
+on:
+  workflow_run:
+    workflows: ["Test Web", "Test API (.NET)", "Test Desktop (Rust)"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: coverage-badge-${{ github.event.workflow_run.name }}
+  cancel-in-progress: false
+
+jobs:
+  badge:
+    name: Update badge
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GIST_ID: ${{ vars.COVERAGE_GIST_ID }}
+      HAS_GIST_TOKEN: ${{ secrets.GIST_TOKEN != '' }}
+    steps:
+      - name: Check configuration
+        id: config
+        shell: bash
+        run: |
+          if [ -z "$GIST_ID" ] || [ "$HAS_GIST_TOKEN" != "true" ]; then
+            echo "::notice::Chưa cấu hình COVERAGE_GIST_ID / GIST_TOKEN — bỏ qua cập nhật badge."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download badge data
+        id: download
+        if: steps.config.outputs.ready == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-badge
+          path: badge
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      # Artifact do workflow test của chính repo này tạo, nhưng vẫn kiểm tra chặt trước khi ghi Gist.
+      - name: Read badge data
+        id: read
+        if: steps.download.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILENAME=$(jq -r '.filename' badge/badge.json)
+          LABEL=$(jq -r '.label' badge/badge.json)
+          PERCENTAGE=$(jq -r '.percentage' badge/badge.json)
+
+          case "$FILENAME" in
+            web-coverage.json|dotnet-coverage.json|desktop-coverage.json) ;;
+            *) echo "::error::filename không hợp lệ: $FILENAME"; exit 1 ;;
+          esac
+          case "$LABEL" in
+            "Web coverage"|"Dotnet coverage"|"Desktop coverage") ;;
+            *) echo "::error::label không hợp lệ: $LABEL"; exit 1 ;;
+          esac
+          if [[ ! "$PERCENTAGE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::percentage không hợp lệ: $PERCENTAGE"
+            exit 1
+          fi
+
+          {
+            echo "filename=$FILENAME"
+            echo "label=$LABEL"
+            echo "percentage=$PERCENTAGE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update coverage badge (Gist)
+        if: steps.read.outcome == 'success'
+        uses: schneegans/dynamic-badges-action@v1.9.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ env.GIST_ID }}
+          filename: ${{ steps.read.outputs.filename }}
+          label: ${{ steps.read.outputs.label }}
+          message: '${{ steps.read.outputs.percentage }}%'
+          valColorRange: ${{ steps.read.outputs.percentage }}
+          minColorRange: 50
+          maxColorRange: 90

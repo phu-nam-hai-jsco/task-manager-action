@@ -67,7 +67,7 @@ on:
         required: false
         default: ''
       coverage_gist_id:
-        description: 'Gist id để cập nhật badge coverage (chỉ chạy trên main)'
+        description: '[Không còn dùng — badge do update-coverage-badge.yml cập nhật, lấy Gist id từ biến repo COVERAGE_GIST_ID]'
         type: string
         required: false
         default: ''
@@ -82,7 +82,7 @@ on:
         description: '[Không còn dùng — đã thay bằng GitHub App token] PAT dự phòng tuỳ chọn cho checkout'
         required: false
       GIST_TOKEN:
-        description: 'PAT tuỳ chọn để cập nhật badge coverage (gist)'
+        description: '[Không còn dùng — chuyển sang update-coverage-badge.yml] PAT tuỳ chọn để cập nhật badge coverage (gist)'
         required: false
 
 permissions:
@@ -104,7 +104,6 @@ jobs:
       caller_run_url: ${{ steps.ref.outputs.caller_run_url }}
       trigger: ${{ steps.ref.outputs.trigger }}
       is_main: ${{ steps.ref.outputs.is_main }}
-      coverage_gist_id: ${{ steps.ref.outputs.coverage_gist_id }}
     steps:
       # Nhận từ repository_dispatch (client_payload), workflow_dispatch hoặc workflow_call (inputs).
       # Token ngắn hạn từ GitHub App, chỉ cần quyền đọc để resolve head của branch.
@@ -144,7 +143,6 @@ jobs:
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           CALLER_RUN_URL: ${{ github.event.client_payload.caller_run_url || inputs.caller_run_url || '' }}
           TRIGGER: ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action || 'manual' }}
-          COVERAGE_GIST_ID: ${{ github.event.client_payload.coverage_gist_id || inputs.coverage_gist_id || '' }}
         with:
           github-token: ${{ steps.read-token.outputs.token }}
           script: |
@@ -167,7 +165,6 @@ jobs:
             }
             core.setOutput('ref', ref);
             core.setOutput('is_main', String(isMain));
-            core.setOutput('coverage_gist_id', process.env.COVERAGE_GIST_ID);
             core.setOutput('source_repository', process.env.SOURCE);
             core.setOutput('pr_number', process.env.PR_NUMBER);
             core.setOutput('comment_id', process.env.COMMENT_ID);
@@ -183,7 +180,6 @@ jobs:
       PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
       HEAD_SHA: ${{ needs.resolve.outputs.ref }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      HAS_GIST_TOKEN: ${{ secrets.GIST_TOKEN != '' }}
       # Caller repo context (reusable workflow chạy với context của caller)
       MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: Web Test
@@ -317,18 +313,25 @@ jobs:
           echo "percentage=${COVERAGE_PCT}" >> $GITHUB_OUTPUT
           echo "Web Coverage: ${COVERAGE_PCT}%"
 
-      - name: Update coverage badge (Gist)
-        if: needs.resolve.outputs.is_main == 'true' && needs.resolve.outputs.coverage_gist_id != '' && env.HAS_GIST_TOKEN == 'true'
-        uses: schneegans/dynamic-badges-action@v1.9.0
+      # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
+      # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
+      - name: Save coverage badge data
+        if: needs.resolve.outputs.is_main == 'true'
+        env:
+          PERCENTAGE: ${{ steps.coverage.outputs.percentage }}
+        run: |
+          mkdir -p badge
+          jq -n --arg filename 'web-coverage.json' --arg label 'Web coverage' --arg percentage "$PERCENTAGE" \
+            '{filename: $filename, label: $label, percentage: $percentage}' > badge/badge.json
+
+      - name: Upload coverage badge data
+        if: needs.resolve.outputs.is_main == 'true'
+        uses: actions/upload-artifact@v7
         with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ needs.resolve.outputs.coverage_gist_id }}
-          filename: web-coverage.json
-          label: Web coverage
-          message: "${{ steps.coverage.outputs.percentage }}%"
-          valColorRange: ${{ steps.coverage.outputs.percentage }}
-          minColorRange: 50
-          maxColorRange: 90
+          name: coverage-badge
+          path: badge/badge.json
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Upload coverage reports
         if: always()
