@@ -188,6 +188,8 @@ jobs:
       # Caller repo context (reusable workflow chạy với context của caller)
       MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: Database Test
+      # Repo database được checkout ở thư mục gốc (standalone)
+      DB_ROOT: .
     steps:
       # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT.
       # - read-token: đọc repo nguồn + submodule (contents: read).
@@ -261,14 +263,15 @@ jobs:
               },
             });
 
-      - name: Checkout repository
+      # Test thẳng repo database (standalone), không đi qua repo chính/submodule.
+      # Chỉ dùng ref đã resolve khi nguồn chính là repo database; còn lại test `main` của nó.
+      - name: Checkout Database Repository
         uses: actions/checkout@v7
         with:
-          repository: ${{ needs.resolve.outputs.source_repository || github.repository }}
-          ref: ${{ needs.resolve.outputs.ref || github.sha }}
+          repository: phu-nam-hai-jsco/task-manager-database
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-database' && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
-          submodules: recursive
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -281,14 +284,6 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-
-      - name: Detect layout (monorepo vs standalone)
-        run: |
-          if [ -f database/schema.prisma ]; then
-            echo "DB_ROOT=database" >> "$GITHUB_ENV"
-          else
-            echo "DB_ROOT=." >> "$GITHUB_ENV"
-          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
