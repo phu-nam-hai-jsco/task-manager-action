@@ -174,6 +174,8 @@ jobs:
       # Caller repo context (reusable workflow chạy với context của caller)
       MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: .NET Test
+      # Repo server được checkout ở thư mục gốc (standalone)
+      DOTNET_DIR: .
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
@@ -250,22 +252,15 @@ jobs:
               },
             });
 
-      - name: Checkout repository
+      # Test thẳng repo server (standalone), không đi qua repo chính/submodule.
+      # Chỉ dùng ref đã resolve khi nguồn chính là repo server; còn lại test `main` của nó.
+      - name: Checkout Server Repository
         uses: actions/checkout@v7
         with:
-          repository: ${{ needs.resolve.outputs.source_repository || github.repository }}
-          ref: ${{ needs.resolve.outputs.ref || github.sha }}
+          repository: phu-nam-hai-jsco/quan-ly-cong-viec-server
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/quan-ly-cong-viec-server' && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
-          submodules: recursive
-
-      - name: Detect layout (monorepo vs standalone)
-        run: |
-          if [ -f server/QuanLyCongViec.slnx ]; then
-            echo "DOTNET_DIR=server" >> "$GITHUB_ENV"
-          else
-            echo "DOTNET_DIR=." >> "$GITHUB_ENV"
-          fi
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v6
