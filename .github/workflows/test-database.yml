@@ -1,58 +1,161 @@
 name: Test Database
 # Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
 # run-name: workflow gọi · repo gọi · PR/ref · trigger — nhìn là biết nguồn chạy.
-run-name: "${{ github.workflow }} · ${{ github.sha }}"
+run-name: >-
+  Test Database · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || 'task-manager-database' }}
+  · ${{ github.event.client_payload.pr_number != '' && format('PR #{0}', github.event.client_payload.pr_number)
+       || github.event.client_payload.branch || inputs.branch || '' }}
+  · ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action }}
 
 on:
+  repository_dispatch:
+    types: [test-database]
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: 'Repo chứa source (owner/name)'
+        required: true
+        type: string
+        default: phu-nam-hai-jsco/task-manager
+      ref:
+        description: 'Commit SHA cần test (bỏ trống = head của branch)'
+        required: false
+        type: string
+      branch:
+        description: 'Branch để resolve head khi bỏ trống ref'
+        required: false
+        type: string
+        default: main
+      pr_number:
+        description: 'PR number (tuỳ chọn — cho báo cáo về PR)'
+        required: false
+        type: string
+      comment_id:
+        description: 'Comment id lệnh $test-* (tuỳ chọn)'
+        required: false
+        type: string
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref of the caller repo to checkout/test/build'
+        description: 'Git ref của repo gọi cần checkout/test/build'
         type: string
         required: false
         default: ''
       pr_number:
-        description: 'PR number for report/comment flows'
+        description: 'Số PR cho luồng báo cáo/comment'
         type: string
         required: false
         default: ''
       comment_id:
-        description: 'Command comment id for $test-* flows'
+        description: 'Id comment lệnh cho luồng $test-*'
         type: string
         required: false
         default: ''
       trigger:
-        description: 'Human-readable trigger label'
+        description: 'Nhãn trigger dễ đọc'
         type: string
         required: false
         default: 'workflow_call'
       caller_run_url:
-        description: 'Caller workflow run URL (shown in the report footer)'
+        description: 'URL run của workflow gọi (hiện ở chân báo cáo)'
         type: string
         required: false
         default: ''
       source_repository:
-        description: 'Repo chứa source cần test (mặc định: repo caller; dispatcher truyền source)'
+        description: 'Repo chứa source cần test (mặc định: repo gọi)'
         type: string
         required: false
         default: ''
     secrets:
       SUBMODULE_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT with repo scope to checkout private submodules + main repo'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT quyền repo để checkout submodule private + repo chính'
         required: false
       MAIN_REPO_PR_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] Optional PAT (contents:write + statuses:write trên caller repo) để set commit status / gửi báo cáo test-report'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT tuỳ chọn (contents:write + statuses:write trên repo gọi) để đặt commit status / gửi báo cáo test-report'
         required: false
       MAIN_REPO_CHECKOUT_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] Optional PAT fallback cho checkout'
+        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT dự phòng tuỳ chọn cho checkout'
         required: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: test-database-${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}-${{ github.event.client_payload.ref || inputs.ref || github.sha }}
+  cancel-in-progress: false
+
 jobs:
+  resolve:
+    name: Resolve source ref
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      source_repository: ${{ steps.ref.outputs.source_repository }}
+      pr_number: ${{ steps.ref.outputs.pr_number }}
+      comment_id: ${{ steps.ref.outputs.comment_id }}
+      caller_run_url: ${{ steps.ref.outputs.caller_run_url }}
+      trigger: ${{ steps.ref.outputs.trigger }}
+    steps:
+      # Nhận từ repository_dispatch (client_payload), workflow_dispatch hoặc workflow_call (inputs).
+      # Token ngắn hạn từ GitHub App, chỉ cần quyền đọc để resolve head của branch.
+      - name: Resolve source repository
+        id: source
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create read token
+        id: read-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          permission-contents: read
+
+      - name: Resolve
+        id: ref
+        uses: actions/github-script@v9
+        env:
+          SOURCE: ${{ github.event.client_payload.source_repository || inputs.source_repository || github.repository }}
+          REF_IN: ${{ github.event.client_payload.ref || inputs.ref || '' }}
+          BRANCH: ${{ github.event.client_payload.branch || inputs.branch || 'main' }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
+          COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
+          CALLER_RUN_URL: ${{ github.event.client_payload.caller_run_url || inputs.caller_run_url || '' }}
+          TRIGGER: ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action || 'manual' }}
+        with:
+          github-token: ${{ steps.read-token.outputs.token }}
+          script: |
+            const [sOwner, sRepo] = process.env.SOURCE.split('/');
+            let ref = process.env.REF_IN;
+            if (!ref) {
+              const b = await github.rest.repos.getBranch({
+                owner: sOwner, repo: sRepo, branch: process.env.BRANCH,
+              });
+              ref = b.data.commit.sha;
+              core.info(`Resolved ${process.env.BRANCH} head: ${ref}`);
+            }
+            core.setOutput('ref', ref);
+            core.setOutput('source_repository', process.env.SOURCE);
+            core.setOutput('pr_number', process.env.PR_NUMBER);
+            core.setOutput('comment_id', process.env.COMMENT_ID);
+            core.setOutput('caller_run_url', process.env.CALLER_RUN_URL);
+            core.setOutput('trigger', process.env.TRIGGER);
+
   test:
     name: Migration & Seed Test
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -71,8 +174,8 @@ jobs:
           --health-retries=5
 
     env:
-      PR_NUMBER: ${{ inputs.pr_number }}
-      HEAD_SHA: ${{ inputs.ref }}
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.resolve.outputs.ref }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       DATABASE_URL: "mysql://root:test@127.0.0.1:3306/test_qlcv"
       LOCAL_DATABASE_URL: "mysql://root:test@127.0.0.1:3306/test_qlcv"
@@ -82,8 +185,10 @@ jobs:
       DATABASE_PASSWORD: "test"
       DATABASE_NAME: "test_qlcv"
       # Caller repo context (reusable workflow chạy với context của caller)
-      MAIN_REPO: ${{ inputs.source_repository || github.repository }}
+      MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: Database Test
+      # Repo database được checkout ở thư mục gốc (standalone)
+      DB_ROOT: .
     steps:
       # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT.
       # - read-token: đọc repo nguồn + submodule (contents: read).
@@ -92,7 +197,7 @@ jobs:
         id: source
         shell: bash
         env:
-          SOURCE_REPOSITORY: ${{ inputs.source_repository || github.repository }}
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.source_repository || github.repository }}
         run: |
           set -euo pipefail
 
@@ -135,11 +240,11 @@ jobs:
 
       # Lệnh từ comment `$test-*`: báo caller repo đã bắt đầu chạy → test-report.yml thả 🚀
       - name: Notify started
-        if: env.PR_NUMBER != '' && inputs.comment_id != ''
+        if: env.PR_NUMBER != '' && needs.resolve.outputs.comment_id != ''
         continue-on-error: true
         uses: actions/github-script@v9
         env:
-          COMMENT_ID: ${{ inputs.comment_id }}
+          COMMENT_ID: ${{ needs.resolve.outputs.comment_id }}
         with:
           github-token: ${{ steps.report-token.outputs.token }}
           script: |
@@ -157,14 +262,15 @@ jobs:
               },
             });
 
-      - name: Checkout repository
+      # Test thẳng repo database (standalone), không đi qua repo chính/submodule.
+      # Chỉ dùng ref đã resolve khi nguồn chính là repo database; còn lại test `main` của nó.
+      - name: Checkout Database Repository
         uses: actions/checkout@v7
         with:
-          repository: ${{ inputs.source_repository || github.repository }}
-          ref: ${{ inputs.ref || github.sha }}
+          repository: phu-nam-hai-jsco/task-manager-database
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-database' && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
-          submodules: recursive
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -177,14 +283,6 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-
-      - name: Detect layout (monorepo vs standalone)
-        run: |
-          if [ -f database/schema.prisma ]; then
-            echo "DB_ROOT=database" >> "$GITHUB_ENV"
-          else
-            echo "DB_ROOT=." >> "$GITHUB_ENV"
-          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -303,8 +401,8 @@ jobs:
         if: always() && env.PR_NUMBER != ''
         env:
           JOB_STATUS: ${{ job.status }}
-          TRIGGER: ${{ inputs.trigger }}
-          CALLER_RUN_URL: ${{ inputs.caller_run_url }}
+          TRIGGER: ${{ needs.resolve.outputs.trigger }}
+          CALLER_RUN_URL: ${{ needs.resolve.outputs.caller_run_url }}
           BACKUP_FOUND: ${{ steps.backup.outputs.found }}
           MIGRATE: ${{ steps.migrate.outputs.status }}
           SEED: ${{ steps.seed.outputs.status }}
@@ -388,7 +486,7 @@ jobs:
         if: always() && env.PR_NUMBER != ''
         uses: actions/github-script@v9
         env:
-          COMMENT_ID: ${{ inputs.comment_id }}
+          COMMENT_ID: ${{ needs.resolve.outputs.comment_id }}
           CONCLUSION: ${{ job.status }}
         with:
           github-token: ${{ steps.report-token.outputs.token }}

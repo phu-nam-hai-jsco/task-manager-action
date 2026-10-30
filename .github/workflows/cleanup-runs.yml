@@ -1,0 +1,146 @@
+# =============================================================================
+# Dọn lịch sử GitHub Actions theo loại
+# =============================================================================
+# Xoá các workflow run ĐÃ HOÀN THÀNH của repo này theo 2 quy tắc:
+#   1. Giữ lại `keep_latest` run mới nhất của MỖI workflow (không bao giờ xoá).
+#   2. Các run còn lại bị xoá khi quá hạn theo KẾT QUẢ (loại):
+#        - success                                  → quá `success_days` ngày
+#        - failure / timed_out / startup_failure    → quá `failure_days` ngày
+#        - cancelled / skipped / neutral / stale
+#          / action_required                        → quá `cancelled_days` ngày
+# Run đang chạy / chờ (queued, in_progress...) không bao giờ bị đụng tới.
+#
+# Trigger: chạy định kỳ hằng tuần + chạy tay (có thể bật dry_run để xem trước).
+# Token: GITHUB_TOKEN của repo (cần actions: write) — chỉ dọn run của repo này.
+# =============================================================================
+
+name: Cleanup Workflow Runs
+run-name: "Cleanup Workflow Runs · ${{ github.event_name }}${{ inputs.dry_run == true && ' · dry-run' || '' }}"
+
+on:
+  schedule:
+    - cron: '17 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Chỉ liệt kê, không xoá'
+        required: false
+        type: boolean
+        default: true
+      keep_latest:
+        description: 'Số run mới nhất của mỗi workflow luôn được giữ lại'
+        required: false
+        type: string
+        default: '5'
+      success_days:
+        description: 'Xoá run thành công cũ hơn N ngày'
+        required: false
+        type: string
+        default: '14'
+      failure_days:
+        description: 'Xoá run thất bại cũ hơn N ngày'
+        required: false
+        type: string
+        default: '30'
+      cancelled_days:
+        description: 'Xoá run bị huỷ/bỏ qua cũ hơn N ngày'
+        required: false
+        type: string
+        default: '3'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      # Chạy theo lịch (schedule) không có inputs → dùng mặc định bên dưới và xoá thật.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      KEEP_LATEST: ${{ inputs.keep_latest || '5' }}
+      SUCCESS_DAYS: ${{ inputs.success_days || '14' }}
+      FAILURE_DAYS: ${{ inputs.failure_days || '30' }}
+      CANCELLED_DAYS: ${{ inputs.cancelled_days || '3' }}
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in KEEP_LATEST SUCCESS_DAYS FAILURE_DAYS CANCELLED_DAYS; do
+            if [[ ! "${!v}" =~ ^[0-9]+$ ]]; then
+              echo "::error::$v phải là số nguyên không âm (nhận: '${!v}')."
+              exit 1
+            fi
+          done
+
+      - name: Select runs to delete
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Chỉ lấy run đã hoàn thành; run đang chạy/chờ không bị đụng tới.
+          gh api --paginate "repos/$REPO/actions/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs[] | {id, workflow_id, name, conclusion, created_at}' \
+            | jq -s '.' > runs.json
+
+          jq -r \
+            --argjson keep "$KEEP_LATEST" \
+            --argjson sd "$SUCCESS_DAYS" \
+            --argjson fd "$FAILURE_DAYS" \
+            --argjson cd "$CANCELLED_DAYS" '
+            def max_days:
+              if   . == "success" then $sd
+              elif . == "failure" or . == "timed_out" or . == "startup_failure" then $fd
+              else $cd end;
+            def age_days: (now - (.created_at | fromdateiso8601)) / 86400;
+            group_by(.workflow_id)
+            | map(sort_by(.created_at) | reverse | .[$keep:])
+            | flatten
+            | map(select(age_days > (.conclusion | max_days)))
+          ' runs.json > to-delete.json
+
+          TOTAL=$(jq 'length' runs.json)
+          COUNT=$(jq 'length' to-delete.json)
+          echo "Tổng run đã hoàn thành: $TOTAL — sẽ xoá: $COUNT (dry_run=$DRY_RUN)"
+
+          {
+            echo "## 🧹 Dọn lịch sử Actions"
+            echo
+            echo "- Chế độ: $([ "$DRY_RUN" = "true" ] && echo '**dry-run** (không xoá)' || echo '**xoá thật**')"
+            echo "- Giữ mới nhất mỗi workflow: \`$KEEP_LATEST\` · thành công > \`$SUCCESS_DAYS\` ngày · thất bại > \`$FAILURE_DAYS\` ngày · huỷ/bỏ qua > \`$CANCELLED_DAYS\` ngày"
+            echo "- Run đã hoàn thành: $TOTAL · chọn xoá: **$COUNT**"
+            echo
+            if [ "$COUNT" -gt 0 ]; then
+              echo "| Workflow | Kết quả | Số run |"
+              echo "|----------|---------|--------|"
+              jq -r 'group_by([.name, .conclusion])[]
+                     | "| \(.[0].name) | \(.[0].conclusion) | \(length) |"' to-delete.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete runs
+        if: env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          DELETED=0; FAILED=0
+          for id in $(jq -r '.[].id' to-delete.json); do
+            if gh api -X DELETE "repos/$REPO/actions/runs/$id" --silent; then
+              DELETED=$((DELETED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              echo "::warning::Không xoá được run $id"
+            fi
+          done
+          echo "Đã xoá: $DELETED · lỗi: $FAILED"
+          echo "- Kết quả: đã xoá **$DELETED**, lỗi **$FAILED**" >> "$GITHUB_STEP_SUMMARY"
+          [ "$FAILED" -eq 0 ]
