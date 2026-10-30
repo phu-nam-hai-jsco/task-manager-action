@@ -155,6 +155,16 @@ jobs:
               ref = b.data.commit.sha;
               core.info(`Resolved ${process.env.BRANCH} head: ${ref}`);
             }
+            // Caller có thể truyền tên branch/tag thay vì SHA → đổi sang SHA để so sánh và đặt commit status
+            if (!/^[0-9a-f]{40}$/i.test(ref)) {
+              try {
+                const c = await github.rest.repos.getCommit({ owner: sOwner, repo: sRepo, ref });
+                core.info(`Resolved ${ref} -> ${c.data.sha}`);
+                ref = c.data.sha;
+              } catch (e) {
+                core.warning(`Không resolve được ref '${ref}' thành SHA: ${e.message}`);
+              }
+            }
             // Đang test head của main? (ref luôn là SHA nên không so sánh được với chuỗi 'main')
             let isMain = false;
             try {
