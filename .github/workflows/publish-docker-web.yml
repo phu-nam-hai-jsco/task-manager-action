@@ -132,8 +132,17 @@ jobs:
 
       - name: Parse env_json
         id: env_json
+        env:
+          BRANCH_IN: ${{ inputs.branch }}
         run: |
           ENV_JSON='${{ inputs.env_json }}'
+          # NEXT_PUBLIC_* bị bake lúc build: lane main thiếu URL API sẽ làm URL media
+          # (/uploads/...) trỏ về host của web. Fail sớm thay vì publish image sai.
+          if [ "$BRANCH_IN" = "main" ] && \
+             [ -z "$(echo "$ENV_JSON" | jq -r '.NEXT_PUBLIC_API_BASE_URL // ""' 2>/dev/null)" ]; then
+            echo "::error::env_json thiếu NEXT_PUBLIC_API_BASE_URL cho lane main (caller phải truyền env_json)"
+            exit 1
+          fi
           if [ -n "$ENV_JSON" ]; then
             echo "build_env=$(echo "$ENV_JSON" | jq -r '.BUILD_ENV // "production"')" >> $GITHUB_OUTPUT
             echo "next_public_api_base_url=$(echo "$ENV_JSON" | jq -r '.NEXT_PUBLIC_API_BASE_URL // ""')" >> $GITHUB_OUTPUT
