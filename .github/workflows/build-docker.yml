@@ -1,0 +1,53 @@
+name: Build Docker (từ repo root)
+run-name: "${{ github.workflow }} · ${{ github.event.client_payload.image }} · ${{ github.event.client_payload.branch }} · ${{ github.event.client_payload.version || 'auto' }}"
+# Nhận repository_dispatch `build-docker` từ repo root (task-manager).
+# Root mã hoá {env_json + secrets} bằng PAYLOAD_ENCRYPTION_KEY; chỉ repo này có khoá giải mã.
+# Mỗi reusable publish-docker-*.yml tự giải mã ở bước đầu job (secret đã mask không đi qua job output được),
+# build + push tag tạm sha-* rồi dispatch `promote-docker` sang task-manager-packages để gắn tag chính thức.
+#
+# client_payload: { image: web|api|migrator, ref, version, branch, encrypted_payload }
+
+on:
+  repository_dispatch:
+    types: [build-docker]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  web:
+    name: Build web
+    if: ${{ github.event.client_payload.image == 'web' }}
+    uses: ./.github/workflows/publish-docker-web.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.client_payload.ref }}
+      source_repository: phu-nam-hai-jsco/task-manager
+      version: ${{ github.event.client_payload.version }}
+      branch: ${{ github.event.client_payload.branch }}
+      staged: true
+
+  api:
+    name: Build api
+    if: ${{ github.event.client_payload.image == 'api' }}
+    uses: ./.github/workflows/publish-docker-api.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.client_payload.ref }}
+      source_repository: phu-nam-hai-jsco/task-manager
+      version: ${{ github.event.client_payload.version }}
+      branch: ${{ github.event.client_payload.branch }}
+      staged: true
+
+  migrator:
+    name: Build migrator
+    if: ${{ github.event.client_payload.image == 'migrator' }}
+    uses: ./.github/workflows/publish-docker-migrator.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.client_payload.ref }}
+      source_repository: phu-nam-hai-jsco/task-manager
+      version: ${{ github.event.client_payload.version }}
+      branch: ${{ github.event.client_payload.branch }}
+      staged: true
