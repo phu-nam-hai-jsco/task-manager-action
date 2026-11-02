@@ -46,7 +46,15 @@ on:
         type: string
         required: false
         default: ''
+      staged:
+        description: 'true: chỉ push tag tạm sha-* rồi dispatch task-manager-packages gắn tag chính thức'
+        type: boolean
+        required: false
+        default: false
     secrets:
+      PAYLOAD_ENCRYPTION_KEY:
+        description: 'Khoá giải mã payload do repo root gửi (build-docker.yml)'
+        required: false
       SUBMODULE_TOKEN:
         description: 'PAT with repo scope to checkout private submodules + main repo'
         required: false
@@ -87,6 +95,39 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Giải mã payload do repo root gửi (PAYLOAD_ENCRYPTION_KEY chỉ có ở repo này).
+      # Đọc ciphertext từ file event (không qua env/input) rồi mask ngay để không lộ trong log công khai.
+      # Không có payload (vd được gọi từ task-manager-packages) thì bỏ qua và dùng secret/input như cũ.
+      - name: Decrypt dispatch payload
+        shell: bash
+        env:
+          PAYLOAD_ENCRYPTION_KEY: ${{ secrets.PAYLOAD_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          CIPHER=$(jq -r '.client_payload.encrypted_payload // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
+          if [ -z "$CIPHER" ]; then
+            echo "Không có encrypted_payload — dùng secret/input của workflow"
+            exit 0
+          fi
+          echo "::add-mask::$CIPHER"
+          if [ -z "$PAYLOAD_ENCRYPTION_KEY" ]; then
+            echo "::error::Thiếu secret PAYLOAD_ENCRYPTION_KEY ở repo task-manager-action"
+            exit 1
+          fi
+          PLAIN="$RUNNER_TEMP/payload.json"
+          echo "$CIPHER" | base64 -d | openssl enc -d -aes-256-cbc -salt -pbkdf2 -pass env:PAYLOAD_ENCRYPTION_KEY -out "$PLAIN"
+          jq -e 'type == "object"' "$PLAIN" > /dev/null
+          for k in AG_GRID_LICENSE SENTRY_OBS_API_TOKEN MEDIATR_LICENSE_KEY; do
+            v=$(jq -r --arg k "$k" '.secrets[$k] // empty' "$PLAIN")
+            if [ -n "$v" ]; then
+              echo "::add-mask::$v"
+              echo "DECRYPTED_$k=$v" >> "$GITHUB_ENV"
+            fi
+          done
+          echo "DECRYPTED_ENV_JSON=$(jq -c '.env_json // {}' "$PLAIN")" >> "$GITHUB_ENV"
+          rm -f "$PLAIN"
+          echo "✅ Đã giải mã payload từ repo root"
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -136,6 +177,9 @@ jobs:
           BRANCH_IN: ${{ inputs.branch }}
         run: |
           ENV_JSON='${{ inputs.env_json }}'
+          if [ -n "$DECRYPTED_ENV_JSON" ] && [ "$DECRYPTED_ENV_JSON" != "{}" ]; then
+            ENV_JSON="$DECRYPTED_ENV_JSON"
+          fi
           # NEXT_PUBLIC_* bị bake lúc build: lane main thiếu URL API sẽ làm URL media
           # (/uploads/...) trỏ về host của web. Fail sớm thay vì publish image sai.
           if [ "$BRANCH_IN" = "main" ] && \
@@ -182,6 +226,13 @@ jobs:
             type=raw,value=${{ steps.version.outputs.version }}${{ steps.lane.outputs.suffix }}
             type=sha,prefix=${{ steps.lane.outputs.prefix }}sha-,format=short
 
+      - name: Resolve staging tag
+        id: stage
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          echo "tag=$(echo "$TAGS" | grep -E 'sha-[0-9a-f]{7,}$' | head -n1)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Web image
         id: build
         uses: docker/build-push-action@v7
@@ -190,7 +241,7 @@ jobs:
           file: docker/nextjs/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ inputs.staged && steps.stage.outputs.tag || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Layer deps (pnpm install) được giữ cache qua registry buildcache + gha
           # để không phải reinstall khi pnpm-lock.yaml không đổi.
@@ -208,14 +259,48 @@ jobs:
             NEXT_PUBLIC_API_BASE_URL=${{ steps.env_json.outputs.next_public_api_base_url }}
             INTERNAL_API_BASE_URL=${{ steps.env_json.outputs.internal_api_base_url }}
             NEXT_PUBLIC_DEBUG=${{ steps.env_json.outputs.next_public_debug }}
-            NEXT_PUBLIC_AG_GRID_LICENSE=${{ secrets.AG_GRID_LICENSE || steps.env_json.outputs.next_public_ag_grid_license }}
+            NEXT_PUBLIC_AG_GRID_LICENSE=${{ env.DECRYPTED_AG_GRID_LICENSE || secrets.AG_GRID_LICENSE || steps.env_json.outputs.next_public_ag_grid_license }}
             SENTRY_DSN_WEB=${{ steps.env_json.outputs.sentry_dsn_web }}
             SENTRY_TRACES_SAMPLE_RATE_WEB_CLIENT=${{ steps.env_json.outputs.sentry_traces_sample_rate_web_client }}
             SENTRY_REPLAY_SESSION_SAMPLE_RATE_WEB=${{ steps.env_json.outputs.sentry_replay_session_sample_rate_web }}
             SENTRY_REPLAY_ON_ERROR_SAMPLE_RATE_WEB=${{ steps.env_json.outputs.sentry_replay_on_error_sample_rate_web }}
-            SENTRY_OBS_API_TOKEN=${{ secrets.SENTRY_OBS_API_TOKEN || steps.env_json.outputs.sentry_obs_api_token }}
+            SENTRY_OBS_API_TOKEN=${{ env.DECRYPTED_SENTRY_OBS_API_TOKEN || secrets.SENTRY_OBS_API_TOKEN || steps.env_json.outputs.sentry_obs_api_token }}
             SENTRY_OBS_ORGANIZATION_SLUG=${{ steps.env_json.outputs.sentry_obs_organization_slug }}
             SENTRY_OBS_PROJECT_WEB=${{ steps.env_json.outputs.sentry_obs_project_web }}
+
+      # Chế độ staged: image mới chỉ có tag tạm sha-*; task-manager-packages gắn tag chính thức (latest, X.Y.Z).
+      - name: Dispatch promote to task-manager-packages
+        if: ${{ inputs.staged }}
+        uses: actions/github-script@v9
+        env:
+          IMAGE: web
+          DIGEST: ${{ steps.build.outputs.digest }}
+          STAGE_TAG: ${{ steps.stage.outputs.tag }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: ${{ inputs.branch }}
+        with:
+          github-token: ${{ secrets.SUBMODULE_TOKEN }}
+          script: |
+            const stageTag = process.env.STAGE_TAG;
+            if (!stageTag || !process.env.DIGEST) {
+              core.setFailed('Thiếu staging tag hoặc digest — không thể dispatch promote');
+              return;
+            }
+            const repoNoTag = stageTag.substring(0, stageTag.lastIndexOf(':'));
+            await github.rest.repos.createDispatchEvent({
+              owner: 'phu-nam-hai-jsco',
+              repo: 'task-manager-packages',
+              event_type: 'promote-docker',
+              client_payload: {
+                image: process.env.IMAGE,
+                source: `${repoNoTag}@${process.env.DIGEST}`,
+                tags: process.env.TAGS.split('\n').filter(Boolean),
+                version: process.env.VERSION,
+                branch: process.env.BRANCH,
+              },
+            });
+            core.notice(`Promote dispatched: ${process.env.IMAGE} ${process.env.DIGEST}`);
 
       - name: Summary
         run: |
