@@ -2,7 +2,7 @@ name: Test API (.NET)
 # Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
 # run-name: workflow gọi · repo gọi · PR/ref · trigger — nhìn là biết nguồn chạy.
 run-name: >-
-  Test API (.NET) · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || 'quan-ly-cong-viec-server' }}
+  Test API (.NET) · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || 'work-management-server' }}
   · ${{ github.event.client_payload.pr_number != '' && format('PR #{0}', github.event.client_payload.pr_number)
        || github.event.client_payload.branch || inputs.branch || '' }}
   · ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action }}
@@ -273,11 +273,13 @@ jobs:
 
       # Test thẳng repo server (standalone), không đi qua repo chính/submodule.
       # Chỉ dùng ref đã resolve khi nguồn chính là repo server; còn lại test `main` của nó.
+      # Repo server đã đổi tên quan-ly-cong-viec-server → work-management-server: nhận cả tên cũ,
+      # nếu không PR của repo server sẽ bị test nhầm `main` thay vì head của PR.
       - name: Checkout Server Repository
         uses: actions/checkout@v7
         with:
-          repository: phu-nam-hai-jsco/quan-ly-cong-viec-server
-          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/quan-ly-cong-viec-server' && needs.resolve.outputs.ref) || 'main' }}
+          repository: phu-nam-hai-jsco/work-management-server
+          ref: ${{ (contains(fromJSON('["phu-nam-hai-jsco/work-management-server","phu-nam-hai-jsco/quan-ly-cong-viec-server"]'), needs.resolve.outputs.source_repository) && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
 
