@@ -1,6 +1,6 @@
 name: Docker Publish API Build
 run-name: "${{ github.workflow }} · ${{ github.sha }}"
-# Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
+# Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
 # Build image API (.NET) từ `docker/dotnet/Dockerfile` (COPY `server/**`) của caller repo.
 
 on:

@@ -1,6 +1,6 @@
 name: Build Docker (từ repo root)
 run-name: "${{ github.workflow }} · ${{ github.event.client_payload.image }} · ${{ github.event.client_payload.branch }} · ${{ github.event.client_payload.version || 'auto' }}"
-# Nhận repository_dispatch `build-docker` từ repo root (task-manager).
+# Nhận repository_dispatch `build-docker` từ repo root (work-management).
 # Root mã hoá {env_json + secrets} bằng PAYLOAD_ENCRYPTION_KEY; chỉ repo này có khoá giải mã.
 # Mỗi reusable publish-docker-*.yml tự giải mã ở bước đầu job (secret đã mask không đi qua job output được),
 # build + push tag tạm sha-* rồi dispatch `promote-docker` sang task-manager-packages để gắn tag chính thức.
@@ -23,7 +23,7 @@ jobs:
     secrets: inherit
     with:
       ref: ${{ github.event.client_payload.ref }}
-      source_repository: phu-nam-hai-jsco/task-manager
+      source_repository: phu-nam-hai-jsco/work-management
       version: ${{ github.event.client_payload.version }}
       branch: ${{ github.event.client_payload.branch }}
       staged: true
@@ -35,7 +35,7 @@ jobs:
     secrets: inherit
     with:
       ref: ${{ github.event.client_payload.ref }}
-      source_repository: phu-nam-hai-jsco/task-manager
+      source_repository: phu-nam-hai-jsco/work-management
       version: ${{ github.event.client_payload.version }}
       branch: ${{ github.event.client_payload.branch }}
       staged: true
@@ -47,7 +47,7 @@ jobs:
     secrets: inherit
     with:
       ref: ${{ github.event.client_payload.ref }}
-      source_repository: phu-nam-hai-jsco/task-manager
+      source_repository: phu-nam-hai-jsco/work-management
       version: ${{ github.event.client_payload.version }}
       branch: ${{ github.event.client_payload.branch }}
       staged: true

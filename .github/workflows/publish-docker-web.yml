@@ -1,6 +1,6 @@
 name: Docker Publish Web Build
 run-name: "${{ github.workflow }} · ${{ github.sha }}"
-# Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
+# Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
 # Build image Web (Next.js static export + nginx) từ `docker/nextjs/Dockerfile` (COPY `frontend/**`).
 
 on:

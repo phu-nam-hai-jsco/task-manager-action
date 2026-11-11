@@ -134,13 +134,13 @@ Các repo **không tự chạy test** nữa mà chỉ gửi event sang đây. M�
 
 | Event (`repository_dispatch`) | Workflow           | Repo được checkout                                              | Nội dung                                                         |
 | ----------------------------- | ------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `test-web`                    | `test-web.yml`     | `task-manager-frontend`                                         | Kiểm tra inline styles + Vitest coverage                          |
+| `test-web`                    | `test-web.yml`     | `work-management-frontend`                                    | Kiểm tra inline styles + Vitest coverage                          |
 | `test-dotnet`                 | `test-dotnet.yml`  | `work-management-server`                                        | .NET restore/build/test + coverage                                |
-| `test-desktop`                | `test-desktop.yml` | `task-manager-desktop` + `task-manager-frontend`                | Build UI tĩnh (Tauri), `cargo llvm-cov`, build test target Windows |
+| `test-desktop`                | `test-desktop.yml` | `task-manager-desktop` + `work-management-frontend`             | Build UI tĩnh (Tauri), `cargo llvm-cov`, build test target Windows |
 | `test-database`               | `test-database.yml`| `task-manager-database`                                         | Prisma migrate + seed trên MariaDB, kiểm tra schema/dữ liệu        |
 
 Quy tắc chọn commit: chỉ khi `source_repository` **chính là** repo được checkout thì dùng `ref` đã resolve
-(SHA của PR/commit); ngược lại (ví dụ nguồn là repo chính `task-manager`) test `main` của repo đó.
+(SHA của PR/commit); ngược lại (ví dụ nguồn là repo chính `work-management`) test `main` của repo đó.
 Commit status và báo cáo luôn gửi về `source_repository` + `ref` đã nhận.
 
 ### Đầu vào
@@ -150,13 +150,13 @@ Mỗi test workflow nhận được từ ba nguồn, cùng một bộ đầu và
 | Nguồn | Cách truyền |
 | ----- | ----------- |
 | `repository_dispatch` | `client_payload`: `source_repository`, `ref`, `branch`, `pr_number`, `comment_id`, `caller_run_url`, `trigger` |
-| `workflow_dispatch` (chạy tay) | `source_repository` (mặc định `phu-nam-hai-jsco/task-manager`), `ref` (bỏ trống = head của `branch`), `branch` (mặc định `main`), `pr_number`, `comment_id` |
+| `workflow_dispatch` (chạy tay) | `source_repository` (mặc định `phu-nam-hai-jsco/work-management`), `ref` (bỏ trống = head của `branch`), `branch` (mặc định `main`), `pr_number`, `comment_id` |
 | `workflow_call` (giữ để tương thích ngược) | `ref`, `pr_number`, `comment_id`, `trigger`, `caller_run_url`, `source_repository` |
 
 Job `resolve` ở đầu mỗi workflow: kiểm tra `source_repository` thuộc `TanNhatCMS` hoặc `phu-nam-hai-jsco`,
 đổi `ref` (tên branch/tag hoặc rỗng) thành **SHA**, và tính `is_main` (SHA có trùng head của `main` ở repo nguồn
 không). Mỗi workflow có `concurrency` riêng theo `test-<loại>-<repo nguồn>-<ref>` (không huỷ run đang chạy);
-tên run dạng `Test Web · task-manager-frontend · PR #12 · $test comment` (workflow · repo · PR/branch · trigger).
+tên run dạng `Test Web · work-management-frontend · PR #12 · $test comment` (workflow · repo · PR/branch · trigger).
 
 ### Phía repo gọi
 
