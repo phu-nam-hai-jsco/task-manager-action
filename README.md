@@ -241,8 +241,8 @@ Bốn workflow test cũng còn nhận `workflow_call` để tương thích ngư�
 ## 🗑️ Legacy
 
 - `test-dispatcher.yml` — dispatcher cũ nhận `repository_dispatch` rồi gọi các test qua `uses:`. Các test workflow giờ nhận
-  event trực tiếp nên file này **thừa và sẽ bị xoá**. Trong lúc nó còn tồn tại, mỗi event `test-*` kích hoạt cả dispatcher lẫn
-  test workflow tương ứng, nên test chạy **hai lần**.
+  event `test-*` trực tiếp nên file này **thừa và sẽ bị xoá**. Để test không chạy hai lần, dispatcher chỉ nghe tên riêng
+  `dispatch-test-{web,dotnet,desktop,database}` (hoặc chạy tay) — các repo nguồn gửi `test-*` nên không còn kích hoạt nó.
 - `publish-docker-nginx.yml` — nginx proxy đã merge vào web image (`docker/nextjs/Dockerfile`).
 - `publish-docker-api-base.yml`, `publish-docker-api-runtime.yml` — base/runtime images
   không còn cần thiết (`docker/dotnet/Dockerfile` build trực tiếp từ `mcr.microsoft.com/dotnet`).
