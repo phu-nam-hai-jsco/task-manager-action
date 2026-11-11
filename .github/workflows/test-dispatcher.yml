@@ -1,8 +1,8 @@
 # =============================================================================
 # task-manager-action — Test Dispatcher
 # =============================================================================
-# Mô hình "chạy chính": các repo (task-manager + task-manager-{frontend,desktop,
-# database,docker}) KHÔNG tự chạy test nữa mà gửi repository_dispatch sang đây.
+# Mô hình "chạy chính": các repo (work-management, work-management-{frontend,server} và
+# task-manager-{desktop,database,docker}) KHÔNG tự chạy test nữa mà gửi repository_dispatch sang đây.
 # Run được ghi nhận + chạy + lưu log ngay tại repo này (tab Actions tập trung 1 chỗ).
 #
 # Trigger:
