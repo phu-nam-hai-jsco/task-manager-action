@@ -1,8 +1,8 @@
 name: Test Desktop (Rust)
-# Reusable workflow — được caller (phu-nam-hai-jsco/task-manager) gọi qua `uses:`.
+# Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
 # run-name: workflow gọi · repo gọi · PR/ref · trigger — nhìn là biết nguồn chạy.
 run-name: >-
-  Test Desktop (Rust) · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager' && 'task-manager' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/task-manager-frontend' && 'task-manager-frontend' || 'task-manager-desktop' }}
+  Test Desktop (Rust) · ${{ (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/work-management' && 'work-management' || (github.event.client_payload.source_repository || inputs.source_repository || github.repository) == 'phu-nam-hai-jsco/work-management-frontend' && 'work-management-frontend' || 'task-manager-desktop' }}
   · ${{ github.event.client_payload.pr_number != '' && format('PR #{0}', github.event.client_payload.pr_number)
        || github.event.client_payload.branch || inputs.branch || '' }}
   · ${{ github.event.client_payload.trigger || inputs.trigger || github.event.action }}
@@ -16,7 +16,7 @@ on:
         description: 'Repo chứa source (owner/name)'
         required: true
         type: string
-        default: phu-nam-hai-jsco/task-manager
+        default: phu-nam-hai-jsco/work-management
       ref:
         description: 'Commit SHA cần test (bỏ trống = head của branch)'
         required: false
@@ -283,8 +283,8 @@ jobs:
       - name: Checkout Frontend Repository
         uses: actions/checkout@v7
         with:
-          repository: phu-nam-hai-jsco/task-manager-frontend
-          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-frontend' && needs.resolve.outputs.ref) || 'main' }}
+          repository: phu-nam-hai-jsco/work-management-frontend
+          ref: ${{ (contains(fromJSON('["phu-nam-hai-jsco/work-management-frontend","phu-nam-hai-jsco/task-manager-frontend"]'), needs.resolve.outputs.source_repository) && needs.resolve.outputs.ref) || 'main' }}
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
           path: frontend
