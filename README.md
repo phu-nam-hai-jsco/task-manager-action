@@ -135,7 +135,7 @@ Các repo **không tự chạy test** nữa mà chỉ gửi event sang đây. M�
 | Event (`repository_dispatch`) | Workflow           | Repo được checkout                                              | Nội dung                                                         |
 | ----------------------------- | ------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `test-web`                    | `test-web.yml`     | `task-manager-frontend`                                         | Kiểm tra inline styles + Vitest coverage                          |
-| `test-dotnet`                 | `test-dotnet.yml`  | `quan-ly-cong-viec-server`                                      | .NET restore/build/test + coverage                                |
+| `test-dotnet`                 | `test-dotnet.yml`  | `work-management-server`                                        | .NET restore/build/test + coverage                                |
 | `test-desktop`                | `test-desktop.yml` | `task-manager-desktop` + `task-manager-frontend`                | Build UI tĩnh (Tauri), `cargo llvm-cov`, build test target Windows |
 | `test-database`               | `test-database.yml`| `task-manager-database`                                         | Prisma migrate + seed trên MariaDB, kiểm tra schema/dữ liệu        |
 
