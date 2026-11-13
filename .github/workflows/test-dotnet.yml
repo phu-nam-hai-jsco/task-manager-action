@@ -286,7 +286,8 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          # Lấy SDK theo global.json của repo server (net11.0 cần SDK 11).
+          global-json-file: ${{ env.DOTNET_DIR }}/global.json
 
       - name: Restore dependencies
         id: restore
