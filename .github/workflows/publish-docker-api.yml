@@ -86,6 +86,11 @@ on:
         type: string
         required: false
         default: 'main'
+      env_json:
+        description: 'JSON build env (base64:<json> tu devtool gui kem) — hien chua tieu thu, doc khi can'
+        type: string
+        required: false
+        default: ''
       staged:
         description: 'true: chi push tag tam sha-* roi dispatch task-manager-packages gan tag chinh thuc'
         type: boolean
