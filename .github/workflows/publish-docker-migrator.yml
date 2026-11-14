@@ -46,6 +46,51 @@ on:
         type: boolean
         required: false
         default: false
+  # Devtool (hoặc bấm tay "Run workflow") gọi THẲNG build — bỏ vòng qua
+  # dispatcher work-management. Env build truyền qua input env_json; secrets
+  # (GHCR/SUBMODULE/AG_GRID/SENTRY) lấy từ chính repo task-manager-action.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref of the caller repo to checkout/build (vd: dev, main, sha)'
+        type: string
+        required: false
+        default: ''
+      pr_number:
+        description: 'PR number for report/comment flows'
+        type: string
+        required: false
+        default: ''
+      comment_id:
+        description: 'Command comment id for $test-* flows'
+        type: string
+        required: false
+        default: ''
+      trigger:
+        description: 'Human-readable trigger label'
+        type: string
+        required: false
+        default: 'workflow_dispatch'
+      version:
+        description: 'Version to tag the image with (fallback: root package.json -> "dev")'
+        type: string
+        required: false
+        default: ''
+      source_repository:
+        description: 'Repo chua source can build (mac dinh phu-nam-hai-jsco/work-management)'
+        type: string
+        required: false
+        default: ''
+      branch:
+        description: 'Lane build: main gan tag latest, dev -> image -dev'
+        type: string
+        required: false
+        default: 'main'
+      staged:
+        description: 'true: chi push tag tam sha-* roi dispatch task-manager-packages gan tag chinh thuc'
+        type: boolean
+        required: false
+        default: false
     secrets:
       PAYLOAD_ENCRYPTION_KEY:
         description: 'Khoá giải mã payload do repo root gửi (build-docker.yml)'
