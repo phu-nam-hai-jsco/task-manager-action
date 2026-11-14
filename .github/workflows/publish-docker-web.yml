@@ -229,13 +229,22 @@ jobs:
           ENV_JSON='${{ inputs.env_json }}'
           # Devtool gửi env_json dạng base64:<json> để an toàn quoting trên mọi shell
           # (CMD/Git Bash strip dấu ") — decode trước khi validate.
+          # BẢO MẬT: env_json là workflow input — KHÔNG được GitHub tự mask như secrets;
+          # ai đọc được repo đều xem inputs của run. Mask từng value ngay khi decode để
+          # không lộ qua log lỗi, và KHÔNG echo/trình bày lại nội dung env trong log.
           case "$ENV_JSON" in
             base64:*)
               DECODED=$(printf '%s' "${ENV_JSON#base64:}" | base64 -d)
               if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$DECODED"; then
+                while IFS= read -r key; do
+                  v=$(printf '%s' "$DECODED" | jq -r --arg k "$key" '.[$k] // empty')
+                  if [ -n "$v" ]; then
+                    echo "::add-mask::$v"
+                  fi
+                done < <(printf '%s' "$DECODED" | jq -r 'keys[]')
                 ENV_JSON="$DECODED"
               else
-                echo "::error::env_json dạng base64: không decode được thành JSON object"
+                echo "::error::env_json dạng base64: không decode được thành JSON object (nội dung không được in ra log)"
                 exit 1
               fi
               ;;
@@ -267,7 +276,6 @@ jobs:
             echo "sentry_traces_sample_rate_web_client=$(echo "$ENV_JSON" | jq -r '.SENTRY_TRACES_SAMPLE_RATE_WEB_CLIENT // "0.2"')" >> $GITHUB_OUTPUT
             echo "sentry_replay_session_sample_rate_web=$(echo "$ENV_JSON" | jq -r '.SENTRY_REPLAY_SESSION_SAMPLE_RATE_WEB // "0.05"')" >> $GITHUB_OUTPUT
             echo "sentry_replay_on_error_sample_rate_web=$(echo "$ENV_JSON" | jq -r '.SENTRY_REPLAY_ON_ERROR_SAMPLE_RATE_WEB // "1.0"')" >> $GITHUB_OUTPUT
-            echo "sentry_obs_api_token=$(echo "$ENV_JSON" | jq -r '.SENTRY_OBS_API_TOKEN // ""')" >> $GITHUB_OUTPUT
             echo "sentry_obs_organization_slug=$(echo "$ENV_JSON" | jq -r '.SENTRY_OBS_ORGANIZATION_SLUG // ""')" >> $GITHUB_OUTPUT
             echo "sentry_obs_project_web=$(echo "$ENV_JSON" | jq -r '.SENTRY_OBS_PROJECT_WEB // "web"')" >> $GITHUB_OUTPUT
           fi
@@ -334,7 +342,9 @@ jobs:
             SENTRY_TRACES_SAMPLE_RATE_WEB_CLIENT=${{ steps.env_json.outputs.sentry_traces_sample_rate_web_client }}
             SENTRY_REPLAY_SESSION_SAMPLE_RATE_WEB=${{ steps.env_json.outputs.sentry_replay_session_sample_rate_web }}
             SENTRY_REPLAY_ON_ERROR_SAMPLE_RATE_WEB=${{ steps.env_json.outputs.sentry_replay_on_error_sample_rate_web }}
-            SENTRY_OBS_API_TOKEN=${{ env.DECRYPTED_SENTRY_OBS_API_TOKEN || secrets.SENTRY_OBS_API_TOKEN || steps.env_json.outputs.sentry_obs_api_token }}
+            # BẢO MẬT: Sentry token KHÔNG nhận từ env_json (input không mask) —
+            # chỉ qua encrypted payload hoặc secret của repo task-manager-action.
+            SENTRY_OBS_API_TOKEN=${{ env.DECRYPTED_SENTRY_OBS_API_TOKEN || secrets.SENTRY_OBS_API_TOKEN }}
             SENTRY_OBS_ORGANIZATION_SLUG=${{ steps.env_json.outputs.sentry_obs_organization_slug }}
             SENTRY_OBS_PROJECT_WEB=${{ steps.env_json.outputs.sentry_obs_project_web }}
 
