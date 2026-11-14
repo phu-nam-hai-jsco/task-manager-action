@@ -187,6 +187,13 @@ jobs:
             echo "::error::env_json thiếu NEXT_PUBLIC_API_BASE_URL cho lane main (caller phải truyền env_json)"
             exit 1
           fi
+          # Spec 052 (web Bun standalone): proxy /api|/uploads|/openapi|/scalar là Next
+          # rewrites bake lúc build từ INTERNAL_API_BASE_URL (thay API_UPSTREAM envsubst
+          # của nginx) — thiếu là web 404 toàn bộ /api/*. Fail sớm cho mọi lane.
+          if [ -z "$(echo "$ENV_JSON" | jq -r '.INTERNAL_API_BASE_URL // ""' 2>/dev/null)" ]; then
+            echo "::error::env_json thiếu INTERNAL_API_BASE_URL — đích rewrite /api/* bake lúc build (spec 052). Caller đặt vars.INTERNAL_API_BASE_URL ở GitHub Environment (vd http://api:8888 cho prod, http://dev-api:8888 cho dev)"
+            exit 1
+          fi
           if [ -n "$ENV_JSON" ]; then
             echo "build_env=$(echo "$ENV_JSON" | jq -r '.BUILD_ENV // "production"')" >> $GITHUB_OUTPUT
             echo "next_public_api_base_url=$(echo "$ENV_JSON" | jq -r '.NEXT_PUBLIC_API_BASE_URL // ""')" >> $GITHUB_OUTPUT
