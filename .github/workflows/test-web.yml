@@ -278,29 +278,27 @@ jobs:
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: "26"
-          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Install dependencies
         id: install
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
 
       - name: Check inline styles
         id: inline_styles
-        run: pnpm run --if-present lint:inline-styles
+        run: bun run --if-present lint:inline-styles
 
       - name: Run tests with coverage
         id: tests
-        # Chạy theo thư mục (WEB_ROOT) thay vì `--filter <tên gói>`: đổi tên gói (vd. @qlcv/web →
-        # @task-manager/web) không làm bước test bị bỏ qua êm (pnpm báo "No projects matched" rồi
-        # thoát 0, sau đó thiếu coverage/cobertura-coverage.xml).
-        run: pnpm --dir "$WEB_ROOT" run test --coverage
+        run: bun --cwd "$WEB_ROOT" run test --coverage
 
       - name: Code Coverage Summary
         uses: irongut/CodeCoverageSummary@v1.3.0
