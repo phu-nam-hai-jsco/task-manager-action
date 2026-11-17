@@ -349,7 +349,17 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.4"
+
+      - name: Cache Bun & Next.js build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            frontend/.next/cache
+          key: ${{ runner.os }}-bun-nextjs-${{ hashFiles('frontend/bun.lock', 'desktop/bun.lock', 'frontend/next.config.ts') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-nextjs-
 
       - name: Detect layout
         run: |
