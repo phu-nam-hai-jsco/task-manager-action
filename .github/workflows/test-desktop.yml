@@ -362,9 +362,17 @@ jobs:
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           RUSTFLAGS: ''
+          # Desktop repo đặt `target-dir = "artifacts/target"` (tương đối) trong .cargo/config.toml.
+          # Trên Windows, cargo-llvm-cov ghép đường dẫn thành dạng lẫn `/` và `\`
+          # (vd `artifacts/target\llvm-cov-target\debug\build\invoice/<hash>\out\...`) khiến bước
+          # report lỗi "no coverage data found". Dùng target-dir tuyệt đối, chỉ một kiểu dấu phân cách.
+          CARGO_TARGET_DIR: ${{ github.workspace }}\${{ env.DESKTOP_ROOT }}\target
         run: |
           mkdir -p coverage
-          cargo llvm-cov --workspace --all-features --cobertura --output-path coverage/desktop-coverage.xml
+          cargo llvm-cov --workspace --all-features --no-report
+          # Chẩn đoán khi report lỗi: liệt kê profraw/profdata đã sinh ra.
+          echo "profraw files:"; find "$(cygpath -u "$CARGO_TARGET_DIR")/llvm-cov-target" -maxdepth 1 -name '*.prof*' | head -20 || true
+          cargo llvm-cov report --cobertura --output-path coverage/desktop-coverage.xml
 
       # Dùng Node đọc Cobertura XML thay cho irongut/CodeCoverageSummary (Docker action chỉ chạy trên Linux).
       - name: Code Coverage Summary & Extract percentage
@@ -381,7 +389,55 @@ jobs:
             const br = (Number(attr("branch-rate") || 0) * 100).toFixed(1);
             const bc = attr("branches-covered") || "0";
             const bv = attr("branches-valid") || "0";
-            const badge = Number(lr) >= 75 ? "🟢" : Number(lr) >= 50 ? "🟡" : "🔴";
+            const icon = (pct) => (pct >= 75 ? "🟢" : pct >= 50 ? "🟡" : "🔴");
+            const badge = icon(Number(lr));
+
+            // Gom số dòng theo file (một file có thể nằm ở nhiều <class>): line -> hits lớn nhất.
+            const files = new Map();
+            const classRe = /<class\b[^>]*\bfilename="([^"]+)"[^>]*>([\s\S]*?)<\/class>/g;
+            const lineRe = /<line\b[^>]*\bnumber="(\d+)"[^>]*\bhits="(\d+)"/g;
+            const rel = (f) => {
+              const n = f.replace(/\\/g, "/");
+              const m = n.match(/(?:^|\/)((?:src|packages)\/.*)$/);
+              return m ? m[1] : n;
+            };
+            for (const [, filename, body] of xml.matchAll(classRe)) {
+              const key = rel(filename);
+              const lines = files.get(key) || new Map();
+              for (const [, num, hits] of body.matchAll(lineRe)) {
+                lines.set(num, Math.max(lines.get(num) || 0, Number(hits)));
+              }
+              files.set(key, lines);
+            }
+
+            // Nhóm theo module: src/<module>, packages/<tên>/src/<module>; file nằm thẳng
+            // trong src gộp vào "src" / "packages/<tên>/src".
+            const groupOf = (f) => {
+              const parts = f.split("/");
+              if (parts[0] === "packages" && parts[2] === "src" && parts.length > 4) return parts.slice(0, 4).join("/");
+              if (parts[0] === "packages" && parts.length > 2) return parts.slice(0, Math.min(3, parts.length - 1)).join("/");
+              if (parts[0] === "src" && parts.length > 2) return parts.slice(0, 2).join("/");
+              return parts[0] === "src" ? "src" : parts.slice(0, -1).join("/") || f;
+            };
+            const stat = (lines) => {
+              let covered = 0;
+              for (const h of lines.values()) if (h > 0) covered++;
+              return { covered, total: lines.size };
+            };
+            const groups = new Map();
+            const fileRows = [];
+            for (const [f, lines] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+              const s = stat(lines);
+              if (!s.total) continue;
+              fileRows.push([f, s]);
+              const g = groups.get(groupOf(f)) || { covered: 0, total: 0, files: 0 };
+              g.covered += s.covered; g.total += s.total; g.files++;
+              groups.set(groupOf(f), g);
+            }
+            const pct = (s) => (s.total ? (s.covered / s.total) * 100 : 0);
+            const row = (name, s, extra = "") =>
+              `| \`${name}\` | ${icon(pct(s))} ${pct(s).toFixed(1)}% | ${s.covered} / ${s.total} |${extra}`;
+
             const md = [
               "### Desktop Coverage",
               "",
@@ -389,11 +445,27 @@ jobs:
               "|--------|----------|-----------------|",
               `| Line | ${badge} ${lr}% | ${lc} / ${lv} |`,
               `| Branch | ${br}% | ${bc} / ${bv} |`,
+              "",
+              "#### Theo khu vực (src / packages)",
+              "",
+              "| Khu vực | Line | Covered / Total | Files |",
+              "|---------|------|-----------------|-------|",
+              ...[...groups.entries()]
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([name, s]) => row(name, s, ` ${s.files} |`)),
+              "",
+              "<details><summary>Chi tiết theo file</summary>",
+              "",
+              "| File | Line | Covered / Total |",
+              "|------|------|-----------------|",
+              ...fileRows.map(([f, s]) => row(f, s)),
+              "",
+              "</details>",
             ].join("\n") + "\n";
             fs.writeFileSync("code-coverage-results.md", md);
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `percentage=${lr}\n`);
-            console.log(`Desktop Coverage: ${lr}%`);
+            console.log(`Desktop Coverage: ${lr}% (${groups.size} khu vực, ${fileRows.length} file)`);
           '
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
