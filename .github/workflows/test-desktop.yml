@@ -405,7 +405,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@c2e5d2ce8920c881761c4cabb41434daa1f95687 # cargo-llvm-cov
+        uses: taiki-e/install-action@5b56535d0239d0a46e7d74f64d83712fad4564d3 # cargo-llvm-cov
 
       - name: Cache Cargo registry & build
         uses: actions/cache@v6
