@@ -316,7 +316,7 @@ jobs:
             libsoup-3.0-dev
             libjavascriptcoregtk-4.1-dev
             gcc-mingw-w64-x86-64
-          version: tauri-desktop-v3
+          version: tauri-desktop-v4
           # Cần chạy postinst: gcc-mingw-w64 tạo symlink x86_64-w64-mingw32-gcc qua update-alternatives
           # (windres cần gcc này khi build target windows-gnu); mặc định action bỏ qua nên thiếu gcc.
           execute_install_scripts: true
@@ -326,7 +326,7 @@ jobs:
       # (run 42984125592). Bump version chỉ chữa tạm, nên kiểm tra thật sau khi cài và tự cài bằng
       # apt-get nếu thiếu, để cache hỏng chỉ làm chậm job chứ không làm fail.
       - name: Verify system dependencies (fallback apt-get)
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
           if pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1 javascriptcoregtk-4.1 \
                libsoup-3.0 librsvg-2.0 ayatana-appindicator3-0.1 \
@@ -418,7 +418,7 @@ jobs:
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           RUSTFLAGS: ''
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
 
       - name: Run tests with coverage
         id: tests_cov
@@ -428,7 +428,7 @@ jobs:
           RUSTFLAGS: ''
         run: |
           mkdir -p coverage
-          cargo llvm-cov --all-features --cobertura --output-path coverage/desktop-coverage.xml
+          cargo llvm-cov --workspace --all-features --cobertura --output-path coverage/desktop-coverage.xml
 
       # Desktop phát hành trên Windows nhưng runner là Linux: biên dịch + link bộ test cho target
       # Windows 64-bit (mingw-w64) để bắt lỗi ở code cfg(windows) (vd. windows-native-keyring-store,
@@ -438,7 +438,7 @@ jobs:
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           RUSTFLAGS: ''
-        run: cargo test --target x86_64-pc-windows-gnu --all-features --no-run
+        run: cargo test --workspace --target x86_64-pc-windows-gnu --all-features --no-run
 
       - name: Code Coverage Summary
         if: env.WITH_COVERAGE == 'true'
