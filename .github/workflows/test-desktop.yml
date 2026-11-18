@@ -331,11 +331,11 @@ jobs:
   # Coverage chạy trên Linux: trên Windows/MSVC (rustc 1.100) llvm-cov không đọc được coverage
   # mapping của binary ("no coverage data found" ở mọi object dù test pass và có .profraw).
   # Job `test` (Windows) vẫn chạy cargo test để bắt lỗi code cfg(windows).
-  # Chỉ cần khi có PR để comment, hoặc khi chạy trên main để cập nhật badge.
+  # Chạy cho MỌI nguồn kích hoạt (PR, push mọi nhánh, chạy tay) để luôn có báo cáo coverage
+  # trong Job Summary; comment PR chỉ khi có PR, badge chỉ cập nhật trên main.
   coverage:
     name: Coverage (Linux)
     needs: resolve
-    if: needs.resolve.outputs.pr_number != '' || needs.resolve.outputs.is_main == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
