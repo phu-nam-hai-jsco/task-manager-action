@@ -693,12 +693,17 @@ jobs:
           if [ -n "$PR_NUMBER" ]; then
             BRANCH=$(GH_TOKEN="$REPORT_TOKEN" gh api "repos/$MAIN_REPO/pulls/$PR_NUMBER" --jq .head.ref 2>/dev/null || echo "$BRANCH")
           fi
-          if [ -z "$BRANCH" ] && [ -n "$HEAD_SHA" ]; then
-            # Push không kèm tên nhánh: nhánh nào đang trỏ vào commit này (ưu tiên main, rồi dev).
+          if [ -z "$PR_NUMBER" ] && [ -n "$HEAD_SHA" ]; then
+            # Không có PR: nhánh nào đang trỏ vào commit này (push không kèm tên nhánh, hoặc chạy tay với
+            # input `branch` mặc định `main` nhưng SHA thuộc nhánh khác). Giữ nhánh được truyền nếu nó
+            # trỏ vào commit; nếu không thì ưu tiên main, rồi dev, rồi nhánh đầu tiên tìm được.
             HEADS=$(GH_TOKEN="$READ_TOKEN" gh api "repos/$MAIN_REPO/commits/$HEAD_SHA/branches-where-head" --jq '.[].name' 2>/dev/null || true)
-            for candidate in main dev $HEADS; do
-              if printf '%s\n' "$HEADS" | grep -qx "$candidate"; then BRANCH="$candidate"; break; fi
-            done
+            echo "nhánh trỏ vào $HEAD_SHA: $(echo $HEADS)"
+            if [ -n "$HEADS" ] && ! printf '%s\n' "$HEADS" | grep -qxF "$BRANCH"; then
+              for candidate in main dev $HEADS; do
+                if printf '%s\n' "$HEADS" | grep -qxF "$candidate"; then BRANCH="$candidate"; break; fi
+              done
+            fi
           fi
           fe_has() { [ -n "$1" ] && GH_TOKEN="$READ_TOKEN" gh api "repos/$FE_REPO/branches/$1" --silent 2>/dev/null; }
           if fe_has "$BRANCH"; then
