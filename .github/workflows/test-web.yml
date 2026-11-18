@@ -284,7 +284,7 @@ jobs:
           node-version: "26"
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.4.4"
 
@@ -312,7 +312,7 @@ jobs:
         run: bun run test -- --coverage
 
       - name: Code Coverage Summary
-        uses: irongut/CodeCoverageSummary@v1.3.0
+        uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
         with:
           filename: ${{ env.WEB_ROOT }}/coverage/cobertura-coverage.xml
           badge: true

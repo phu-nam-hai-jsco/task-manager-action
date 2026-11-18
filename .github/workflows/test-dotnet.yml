@@ -312,7 +312,7 @@ jobs:
           reportgenerator -reports:"coverage/**/coverage.cobertura.xml" -targetdir:"coverage/merged" -reporttypes:"Cobertura"
 
       - name: Code Coverage Summary
-        uses: irongut/CodeCoverageSummary@v1.3.0
+        uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
         with:
           filename: ${{ env.DOTNET_DIR }}/coverage/merged/Cobertura.xml
           badge: true

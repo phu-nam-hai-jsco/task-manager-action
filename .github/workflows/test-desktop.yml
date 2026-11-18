@@ -305,7 +305,7 @@ jobs:
       # mà không cài gói nào → build glib-sys fail "glib-2.0 not found" (run 40804883075). Bump version để bỏ cache hỏng.
       - name: Install system dependencies (Linux / Tauri)
         timeout-minutes: 15
-        uses: awalsh128/cache-apt-pkgs-action@v1
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1
         with:
           packages: >-
             libwebkit2gtk-4.1-dev
@@ -347,7 +347,7 @@ jobs:
           node-version: 26
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.4.4"
 
@@ -390,7 +390,7 @@ jobs:
           test -f ../frontend/dist/index.html && echo "FE static export OK"
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: llvm-tools-preview
           # Target Windows 64-bit (mingw-w64) để biên dịch code cfg(windows) ngay trên Linux.
@@ -398,7 +398,7 @@ jobs:
 
       - name: Install cargo-llvm-cov
         if: env.WITH_COVERAGE == 'true'
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@c2e5d2ce8920c881761c4cabb41434daa1f95687 # cargo-llvm-cov
 
       - name: Cache Cargo registry & build
         uses: actions/cache@v6
@@ -442,7 +442,7 @@ jobs:
 
       - name: Code Coverage Summary
         if: env.WITH_COVERAGE == 'true'
-        uses: irongut/CodeCoverageSummary@v1.3.0
+        uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
         with:
           filename: ${{ env.DESKTOP_ROOT }}/coverage/desktop-coverage.xml
           badge: true
