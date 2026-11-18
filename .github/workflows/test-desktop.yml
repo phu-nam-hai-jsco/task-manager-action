@@ -71,19 +71,6 @@ on:
         type: string
         required: false
         default: ''
-    secrets:
-      SUBMODULE_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT quyền repo để checkout submodule private + repo chính'
-        required: false
-      MAIN_REPO_PR_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT tuỳ chọn (contents:write + statuses:write trên repo gọi) để đặt commit status / gửi báo cáo test-report'
-        required: false
-      MAIN_REPO_CHECKOUT_TOKEN:
-        description: '[Không còn dùng — đã thay bằng GitHub App token] PAT dự phòng tuỳ chọn cho checkout'
-        required: false
-      GIST_TOKEN:
-        description: '[Không còn dùng — chuyển sang update-coverage-badge.yml] PAT tuỳ chọn để cập nhật badge coverage (gist)'
-        required: false
 
 permissions:
   contents: read

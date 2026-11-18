@@ -55,15 +55,6 @@ on:
       PAYLOAD_ENCRYPTION_KEY:
         description: 'Khoá giải mã payload do repo root gửi (build-docker.yml)'
         required: false
-      SUBMODULE_TOKEN:
-        description: 'PAT with repo scope to checkout private submodules + main repo'
-        required: false
-      GHCR_TOKEN:
-        description: 'Optional PAT with write:packages to push to GHCR (fallback: MAIN_REPO_CHECKOUT_TOKEN, then GITHUB_TOKEN)'
-        required: false
-      MAIN_REPO_CHECKOUT_TOKEN:
-        description: 'Optional PAT fallback for checkout + GHCR login'
-        required: false
       AG_GRID_LICENSE:
         description: 'Optional AG Grid license key (NEXT_PUBLIC_AG_GRID_LICENSE build arg)'
         required: false
@@ -128,14 +119,64 @@ jobs:
           rm -f "$PLAIN"
           echo "✅ Đã giải mã payload từ repo root"
 
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      # Chỉ checkout repo root (không recursive) để lấy .dockerignore + package.json,
+      # sau đó chỉ checkout đúng 2 submodule cần cho Web là frontend và docker (bỏ qua server, desktop, database).
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.source_repository || github.repository }}
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 1
-          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
-          submodules: recursive
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Resolve pinned commits of frontend + docker
+        id: pins
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SRC_REPO: ${{ inputs.source_repository || github.repository }}
+          SRC_REF: ${{ inputs.ref || github.sha }}
+        run: |
+          for m in frontend docker; do
+            info=$(gh api "repos/${SRC_REPO}/contents/${m}?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
+            type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
+            if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
+              echo "::error::'${m}' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
+              exit 1
+            fi
+            repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
+            echo "${m}_repo=${repo}" >> "$GITHUB_OUTPUT"
+            echo "${m}_sha=${sha}" >> "$GITHUB_OUTPUT"
+            echo "${m}: ${repo}@${sha}"
+          done
+
+      - name: Checkout frontend
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.pins.outputs.frontend_repo }}
+          ref: ${{ steps.pins.outputs.frontend_sha }}
+          path: frontend
+          fetch-depth: 1
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout docker
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.pins.outputs.docker_repo }}
+          ref: ${{ steps.pins.outputs.docker_sha }}
+          path: docker
+          fetch-depth: 1
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Resolve version
         id: version
@@ -210,7 +251,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          password: ${{ steps.app-token.outputs.token }}
 
       - name: Docker metadata
         id: meta
@@ -247,7 +288,7 @@ jobs:
           # để không phải reinstall khi pnpm-lock.yaml không đổi.
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/task-manager-web${{ steps.lane.outputs.name_suffix }}:buildcache${{ steps.lane.outputs.suffix }}
-            type=gha,mode=max,scope=publish-web
+            type=gha,scope=publish-web
           cache-to: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/task-manager-web${{ steps.lane.outputs.name_suffix }}:buildcache${{ steps.lane.outputs.suffix }},mode=max
             type=gha,mode=max,scope=publish-web
@@ -280,7 +321,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           BRANCH: ${{ inputs.branch }}
         with:
-          github-token: ${{ secrets.SUBMODULE_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const stageTag = process.env.STAGE_TAG;
             if (!stageTag || !process.env.DIGEST) {

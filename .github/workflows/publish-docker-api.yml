@@ -50,15 +50,6 @@ on:
       PAYLOAD_ENCRYPTION_KEY:
         description: 'Khoá giải mã payload do repo root gửi (build-docker.yml)'
         required: false
-      SUBMODULE_TOKEN:
-        description: 'PAT with repo scope to checkout private submodules + main repo'
-        required: false
-      GHCR_TOKEN:
-        description: 'Optional PAT with write:packages to push to GHCR (fallback: MAIN_REPO_CHECKOUT_TOKEN, then GITHUB_TOKEN)'
-        required: false
-      MAIN_REPO_CHECKOUT_TOKEN:
-        description: 'Optional PAT fallback for checkout + GHCR login'
-        required: false
       MEDIATR_LICENSE_KEY:
         description: 'Optional MediatR license key baked into the API image (MEDIATR__LICENSEKEY build arg)'
         required: false
@@ -120,13 +111,21 @@ jobs:
           rm -f "$PLAIN"
           echo "✅ Đã giải mã payload từ repo root"
 
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       # Build API chỉ cần 2 repo: server (mã nguồn .NET) và docker (Dockerfile + entrypoint).
       # Không checkout repo chính task-manager + submodules recursive (frontend/desktop/database... không dùng).
       # Vẫn giữ đúng commit mà repo chính đã ghim cho 2 submodule tại `ref` (đọc qua Contents API).
       - name: Resolve pinned commits of server + docker
         id: pins
         env:
-          GH_TOKEN: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SRC_REPO: ${{ inputs.source_repository || github.repository }}
           SRC_REF: ${{ inputs.ref || github.sha }}
         run: |
@@ -151,7 +150,7 @@ jobs:
           path: server
           fetch-depth: 1
           persist-credentials: false
-          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Checkout docker
         uses: actions/checkout@v7
@@ -161,7 +160,7 @@ jobs:
           path: docker
           fetch-depth: 1
           persist-credentials: false
-          token: ${{ secrets.SUBMODULE_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
 
       # Context build là thư mục gốc workspace: loại .git của 2 repo con khỏi context
       - name: Exclude .git from build context
@@ -227,7 +226,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.MAIN_REPO_CHECKOUT_TOKEN || github.token }}
+          password: ${{ steps.app-token.outputs.token }}
 
       - name: Docker metadata
         id: meta
@@ -283,7 +282,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           BRANCH: ${{ inputs.branch }}
         with:
-          github-token: ${{ secrets.SUBMODULE_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const stageTag = process.env.STAGE_TAG;
             if (!stageTag || !process.env.DIGEST) {
