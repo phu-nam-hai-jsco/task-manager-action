@@ -362,9 +362,17 @@ jobs:
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           RUSTFLAGS: ''
+          # Desktop repo đặt `target-dir = "artifacts/target"` (tương đối) trong .cargo/config.toml.
+          # Trên Windows, cargo-llvm-cov ghép đường dẫn thành dạng lẫn `/` và `\`
+          # (vd `artifacts/target\llvm-cov-target\debug\build\invoice/<hash>\out\...`) khiến bước
+          # report lỗi "no coverage data found". Dùng target-dir tuyệt đối, chỉ một kiểu dấu phân cách.
+          CARGO_TARGET_DIR: ${{ github.workspace }}\${{ env.DESKTOP_ROOT }}\target
         run: |
           mkdir -p coverage
-          cargo llvm-cov --workspace --all-features --cobertura --output-path coverage/desktop-coverage.xml
+          cargo llvm-cov --workspace --all-features --no-report
+          # Chẩn đoán khi report lỗi: liệt kê profraw/profdata đã sinh ra.
+          echo "profraw files:"; find "$(cygpath -u "$CARGO_TARGET_DIR")/llvm-cov-target" -maxdepth 1 -name '*.prof*' | head -20 || true
+          cargo llvm-cov report --cobertura --output-path coverage/desktop-coverage.xml
 
       # Dùng Node đọc Cobertura XML thay cho irongut/CodeCoverageSummary (Docker action chỉ chạy trên Linux).
       - name: Code Coverage Summary & Extract percentage
