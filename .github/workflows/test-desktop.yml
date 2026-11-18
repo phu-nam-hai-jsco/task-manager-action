@@ -171,8 +171,11 @@ jobs:
   test:
     name: Run Tests
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
     env:
       PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
       HEAD_SHA: ${{ needs.resolve.outputs.ref }}
@@ -276,58 +279,6 @@ jobs:
           token: ${{ steps.read-token.outputs.token }}
           path: frontend
 
-      # Mirror azure.archive.ubuntu.com đôi khi cực chậm (run 39920827675: ~35 MB mất >10 phút → treo
-      # hết 45 phút). Retry + timeout mỗi kết nối để lỗi mạng lẻ tẻ không kéo cả job.
-      - name: Configure apt (retries / timeouts)
-        run: |
-          sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null <<'EOF'
-          Acquire::Retries "5";
-          Acquire::http::Timeout "30";
-          Acquire::https::Timeout "30";
-          EOF
-
-      # Cache các gói .deb (~180 MB, ~850 MB sau cài) theo danh sách gói: lần sau khỏi tải lại từ mirror.
-      # timeout riêng → nếu mirror kẹt thì fail sau 15 phút thay vì 45.
-      # Cache key = hash(gói) + version. Cache cũ tauri-desktop-v1 bị lưu rỗng (~0 MB, 6 KB) nên cache hit
-      # mà không cài gói nào → build glib-sys fail "glib-2.0 not found" (run 40804883075). Bump version để bỏ cache hỏng.
-      - name: Install system dependencies (Linux / Tauri)
-        timeout-minutes: 15
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1
-        with:
-          packages: >-
-            libwebkit2gtk-4.1-dev
-            libgtk-3-dev
-            libayatana-appindicator3-dev
-            librsvg2-dev
-            libxdo-dev
-            libsoup-3.0-dev
-            libjavascriptcoregtk-4.1-dev
-            gcc-mingw-w64-x86-64
-          version: tauri-desktop-v4
-          # Cần chạy postinst: gcc-mingw-w64 tạo symlink x86_64-w64-mingw32-gcc qua update-alternatives
-          # (windres cần gcc này khi build target windows-gnu); mặc định action bỏ qua nên thiếu gcc.
-          execute_install_scripts: true
-
-      # Cache của action trên có thể bị lưu rỗng (chỉ có manifest, "Restoring 0 packages") mà step vẫn
-      # xanh → glib-sys fail "glib-2.0 not found". Đã gặp ở v1 (run 40804883075) và lại ở v2
-      # (run 42984125592). Bump version chỉ chữa tạm, nên kiểm tra thật sau khi cài và tự cài bằng
-      # apt-get nếu thiếu, để cache hỏng chỉ làm chậm job chứ không làm fail.
-      - name: Verify system dependencies (fallback apt-get)
-        timeout-minutes: 25
-        run: |
-          if pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1 javascriptcoregtk-4.1 \
-               libsoup-3.0 librsvg-2.0 ayatana-appindicator3-0.1 \
-             && [ -f /usr/include/xdo.h ] \
-             && command -v x86_64-w64-mingw32-gcc >/dev/null; then
-            echo "System dependencies OK"
-            exit 0
-          fi
-          echo "::warning::Cache apt rỗng/hỏng — cài lại system dependencies bằng apt-get (nên bump 'version' của cache-apt-pkgs)"
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
-            libxdo-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev gcc-mingw-w64-x86-64
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
@@ -380,8 +331,6 @@ jobs:
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: llvm-tools-preview
-          # Target Windows 64-bit (mingw-w64) để biên dịch code cfg(windows) ngay trên Linux.
-          targets: x86_64-pc-windows-gnu
 
       - name: Install cargo-llvm-cov
         if: env.WITH_COVERAGE == 'true'
@@ -417,38 +366,35 @@ jobs:
           mkdir -p coverage
           cargo llvm-cov --workspace --all-features --cobertura --output-path coverage/desktop-coverage.xml
 
-      # Desktop phát hành trên Windows nhưng runner là Linux: biên dịch + link bộ test cho target
-      # Windows 64-bit (mingw-w64) để bắt lỗi ở code cfg(windows) (vd. windows-native-keyring-store,
-      # webview2-com/windows-core). Chỉ build, không chạy (--no-run): file .exe cần Windows để chạy.
-      - name: Build tests for Windows target (x86_64-pc-windows-gnu)
-        id: tests_win
-        working-directory: ${{ env.DESKTOP_ROOT }}
-        env:
-          RUSTFLAGS: ''
-        run: cargo test --workspace --target x86_64-pc-windows-gnu --all-features --no-run
-
-      - name: Code Coverage Summary
-        if: env.WITH_COVERAGE == 'true'
-        uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
-        with:
-          filename: ${{ env.DESKTOP_ROOT }}/coverage/desktop-coverage.xml
-          badge: true
-          fail_below_min: false
-          format: markdown
-          hide_branch_rate: false
-          hide_complexity: true
-          indicators: true
-          output: both
-          thresholds: '50 75'
-
-      - name: Extract coverage percentage
+      # Dùng Node đọc Cobertura XML thay cho irongut/CodeCoverageSummary (Docker action chỉ chạy trên Linux).
+      - name: Code Coverage Summary & Extract percentage
         id: coverage
         if: env.WITH_COVERAGE == 'true'
         run: |
-          COVERAGE=$(grep -oP 'line-rate="\K[^"]+' "$DESKTOP_ROOT/coverage/desktop-coverage.xml" | head -1)
-          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc | xargs printf "%.1f")
-          echo "percentage=${COVERAGE_PCT}" >> $GITHUB_OUTPUT
-          echo "Desktop Coverage: ${COVERAGE_PCT}%"
+          node -e '
+            const fs = require("fs");
+            const xml = fs.readFileSync(process.env.DESKTOP_ROOT + "/coverage/desktop-coverage.xml", "utf8");
+            const attr = (k) => (xml.match(new RegExp(k + "=\"([^\"]+)\"")) || [])[1];
+            const lr = (Number(attr("line-rate") || 0) * 100).toFixed(1);
+            const lc = attr("lines-covered") || "0";
+            const lv = attr("lines-valid") || "0";
+            const br = (Number(attr("branch-rate") || 0) * 100).toFixed(1);
+            const bc = attr("branches-covered") || "0";
+            const bv = attr("branches-valid") || "0";
+            const badge = Number(lr) >= 75 ? "🟢" : Number(lr) >= 50 ? "🟡" : "🔴";
+            const md = [
+              "### Desktop Coverage",
+              "",
+              "| Metric | Coverage | Covered / Total |",
+              "|--------|----------|-----------------|",
+              `| Line | ${badge} ${lr}% | ${lc} / ${lv} |`,
+              `| Branch | ${br}% | ${bc} / ${bv} |`,
+            ].join("\n") + "\n";
+            fs.writeFileSync("code-coverage-results.md", md);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `percentage=${lr}\n`);
+            console.log(`Desktop Coverage: ${lr}%`);
+          '
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
@@ -488,7 +434,6 @@ jobs:
           INSTALL: ${{ steps.install.outcome }}
           BUILD_UI: ${{ steps.build_ui.outcome }}
           TESTS: ${{ steps.tests_cov.outcome }}
-          TESTS_WIN: ${{ steps.tests_win.outcome }}
         run: |
           icon() { case "$1" in success) echo "✅ Passed";; failure) echo "❌ Failed";; cancelled) echo "🚫 Cancelled";; *) echo "⏭️ Skipped";; esac; }
           [ "$JOB_STATUS" = "success" ] && RESULT="✅ Passed" || RESULT="❌ $JOB_STATUS"
@@ -500,7 +445,6 @@ jobs:
             echo "| Install dependencies | $(icon "$INSTALL") |"
             echo "| Build Tauri UI | $(icon "$BUILD_UI") |"
             echo "| Cargo test (llvm-cov) | $(icon "$TESTS") |"
-            echo "| Build tests (Windows x64) | $(icon "$TESTS_WIN") |"
             echo
             if [ -f code-coverage-results.md ]; then
               sed 's/Code Coverage/Desktop Coverage/g' code-coverage-results.md
