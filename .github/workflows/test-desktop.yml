@@ -270,7 +270,27 @@ jobs:
           token: ${{ steps.read-token.outputs.token }}
           path: desktop
 
+      # Desktop repo được checkout tại desktop/ (sibling với frontend/ khi cần).
+      # Chỉ cần build static export của frontend khi tauri.conf `build.frontendDist` trỏ vào
+      # ../frontend (kiến trúc cũ). Kiến trúc sidecar (bun + Next standalone) đặt frontendDist
+      # = ./empty-frontend → generate_context!() không cần frontend → bỏ checkout/install/build.
+      - name: Detect layout
+        id: layout
+        run: |
+          echo "DESKTOP_ROOT=desktop" >> "$GITHUB_ENV"
+          DIST=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("desktop/tauri.conf.json","utf8")).build?.frontendDist ?? "")')
+          echo "tauri.conf frontendDist: ${DIST:-<trống>}"
+          case "$DIST" in
+            ../frontend*)
+              echo "needs_frontend=true" >> "$GITHUB_OUTPUT"
+              echo "FRONTEND_DIST=$GITHUB_WORKSPACE/frontend/dist" >> "$GITHUB_ENV" ;;
+            *)
+              echo "needs_frontend=false" >> "$GITHUB_OUTPUT"
+              echo "Frontend phục vụ qua sidecar — bỏ qua checkout/build frontend." ;;
+          esac
+
       - name: Checkout Frontend Repository
+        if: steps.layout.outputs.needs_frontend == 'true'
         uses: actions/checkout@v7
         with:
           repository: phu-nam-hai-jsco/work-management-frontend
@@ -290,6 +310,7 @@ jobs:
           bun-version: "1.4.4"
 
       - name: Cache Bun & Next.js build
+        if: steps.layout.outputs.needs_frontend == 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -299,14 +320,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-nextjs-
 
-      - name: Detect layout
-        run: |
-          # Desktop repo duoc checkout tai path desktop/ (siblings: desktop/ + frontend/)
-          echo "DESKTOP_ROOT=desktop" >> "$GITHUB_ENV"
-          # tauri.conf frontendDist ../frontend/dist (tu desktop/) = workspace/frontend/dist
-          echo "FRONTEND_DIST=$GITHUB_WORKSPACE/frontend/dist" >> "$GITHUB_ENV"
-
       - name: Install dependencies (frontend)
+        if: steps.layout.outputs.needs_frontend == 'true'
         working-directory: frontend
         run: bun install --frozen-lockfile
 
@@ -317,6 +332,7 @@ jobs:
 
       - name: Build frontend static export
         id: build_ui
+        if: steps.layout.outputs.needs_frontend == 'true'
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           NEXT_TAURI_STATIC_EXPORT: '1'
@@ -562,6 +578,7 @@ jobs:
           CALLER_RUN_URL: ${{ needs.resolve.outputs.caller_run_url }}
           INSTALL: ${{ steps.install.outcome }}
           BUILD_UI: ${{ steps.build_ui.outcome }}
+          NEEDS_FRONTEND: ${{ steps.layout.outputs.needs_frontend }}
           TESTS: ${{ steps.tests_cov.outcome }}
         run: |
           icon() { case "$1" in success) echo "✅ Passed";; failure) echo "❌ Failed";; cancelled) echo "🚫 Cancelled";; *) echo "⏭️ Skipped";; esac; }
@@ -572,7 +589,11 @@ jobs:
             echo "| Step | Result |"
             echo "|------|--------|"
             echo "| Install dependencies | $(icon "$INSTALL") |"
-            echo "| Build Tauri UI | $(icon "$BUILD_UI") |"
+            if [ "$NEEDS_FRONTEND" = "false" ]; then
+              echo "| Build Tauri UI | ⏭️ Không cần (frontend chạy qua sidecar) |"
+            else
+              echo "| Build Tauri UI | $(icon "$BUILD_UI") |"
+            fi
             echo "| Cargo test (llvm-cov) | $(icon "$TESTS") |"
             echo
             if [ -f code-coverage-results.md ]; then
