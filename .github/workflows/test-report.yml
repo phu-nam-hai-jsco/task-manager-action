@@ -18,6 +18,7 @@
 # Workflow tạo GitHub App token qua `actions/create-github-app-token` (dùng `vars.APP_CLIENT_ID`
 # và `secrets.APP_PRIVATE_KEY` của repo gọi qua `secrets: inherit`) để comment và reaction
 # được đăng dưới danh nghĩa GitHub App bot thay vì `github-actions[bot]`.
+# Thiếu secret/var (repo gọi không có `secrets: inherit`) → tự dùng GITHUB_TOKEN của repo gọi.
 #
 # client_payload:
 #   stage       'started' (action bắt đầu chạy → 🚀) | 'completed' (kết quả, mặc định)
@@ -66,8 +67,22 @@ jobs:
             || { echo "::error::run_url không hợp lệ"; exit 1; }
           echo "✅ $STAGE · PR #$PR_NUMBER · comment ${COMMENT_ID:-—} · $HEADER · ${CONCLUSION:-—}"
 
+      # Repo gọi chưa truyền `secrets: inherit` (hoặc thiếu secret/var) → không tạo App token mà
+      # dùng GITHUB_TOKEN của repo gọi (comment đăng bằng github-actions[bot]) thay vì làm hỏng job
+      # và mất luôn comment kết quả test.
+      - name: Check GitHub App credentials
+        id: app-creds
+        env:
+          HAS_KEY: ${{ secrets.APP_PRIVATE_KEY != '' && vars.APP_CLIENT_ID != '' }}
+        run: |
+          echo "available=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::warning::Không có APP_PRIVATE_KEY/APP_CLIENT_ID (repo gọi cần 'secrets: inherit') — dùng GITHUB_TOKEN của repo gọi."
+          fi
+
       - name: Create GitHub App token
         id: app-token
+        if: steps.app-creds.outputs.available == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
@@ -81,7 +96,7 @@ jobs:
       - name: React 🚀 (started)
         if: env.STAGE == 'started' && env.COMMENT_ID != ''
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
         run: |
           gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=rocket --silent
@@ -105,7 +120,7 @@ jobs:
         if: env.STAGE == 'completed' && env.COMMENT_ID == ''
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3
         with:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           number: ${{ env.PR_NUMBER }}
           header: ${{ env.HEADER }}
           recreate: true
@@ -115,7 +130,7 @@ jobs:
       - name: Reply to command comment
         if: env.STAGE == 'completed' && env.COMMENT_ID != ''
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
         run: |
           COMMENT_URL="$GITHUB_SERVER_URL/$REPO/pull/$PR_NUMBER#issuecomment-$COMMENT_ID"
