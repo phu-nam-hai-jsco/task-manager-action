@@ -362,17 +362,74 @@ jobs:
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           RUSTFLAGS: ''
-          # Desktop repo đặt `target-dir = "artifacts/target"` (tương đối) trong .cargo/config.toml.
-          # Trên Windows, cargo-llvm-cov ghép đường dẫn thành dạng lẫn `/` và `\`
-          # (vd `artifacts/target\llvm-cov-target\debug\build\invoice/<hash>\out\...`) khiến bước
-          # report lỗi "no coverage data found". Dùng target-dir tuyệt đối, chỉ một kiểu dấu phân cách.
+          # Target-dir tuyệt đối, một kiểu dấu phân cách (desktop repo đặt `artifacts/target` tương đối).
           CARGO_TARGET_DIR: ${{ github.workspace }}\${{ env.DESKTOP_ROOT }}\target
         run: |
           mkdir -p coverage
           cargo llvm-cov --workspace --all-features --no-report
-          # Chẩn đoán khi report lỗi: liệt kê profraw/profdata đã sinh ra.
-          echo "profraw files:"; find "$(cygpath -u "$CARGO_TARGET_DIR")/llvm-cov-target" -maxdepth 1 -name '*.prof*' | head -20 || true
-          cargo llvm-cov report --cobertura --output-path coverage/desktop-coverage.xml
+          if cargo llvm-cov report --cobertura --output-path coverage/desktop-coverage.xml; then
+            exit 0
+          fi
+
+          # Fallback: trên Windows `cargo llvm-cov report` có thể lỗi "no coverage data found" vì
+          # một object không có coverage mapping (vd cdylib của Tauri) làm llvm-cov từ chối CẢ bộ.
+          # Thử từng object của các package trong workspace, bỏ object lỗi rồi tự export.
+          echo "::warning::cargo llvm-cov report lỗi — thử export từng object (fallback)"
+          # Tool là .exe native: truyền đường dẫn dạng `D:/...` (cygpath -m), không dựa vào MSYS tự đổi.
+          TARGET="$(cygpath -u "$CARGO_TARGET_DIR")/llvm-cov-target"
+          TOOLS="$(cygpath -u "$(rustc --print sysroot)")/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+          PROFDATA="$(cygpath -m "$TARGET")/fallback.profdata"
+          mapfile -t PROFRAWS < <(find "$TARGET" -maxdepth 1 -name '*.profraw' -exec cygpath -m {} \;)
+          echo "${#PROFRAWS[@]} profraw file"
+          "$TOOLS/llvm-profdata" merge -sparse "${PROFRAWS[@]}" -o "$PROFDATA"
+
+          PKGS=$(cargo metadata --no-deps --format-version 1 \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).packages.map(p=>p.name).join(" ")))')
+          OBJECTS=()
+          for pkg in $PKGS; do
+            while IFS= read -r obj; do
+              obj="$(cygpath -m "$obj")"
+              case "$(basename "$obj")" in build_script_*|build-script-*) continue ;; esac
+              if err=$("$TOOLS/llvm-cov" export -summary-only -instr-profile="$PROFDATA" "$obj" 2>&1 >/dev/null); then
+                echo "✓ $obj"; OBJECTS+=("$obj")
+              else
+                echo "✗ bỏ qua $obj: $err"
+              fi
+            done < <(find "$TARGET/debug" -path "*/build/$pkg/*/out/*" \( -name '*.exe' -o -name '*.dll' \) 2>/dev/null)
+          done
+          [ ${#OBJECTS[@]} -gt 0 ] || { echo "::error::Không object nào có coverage data"; exit 1; }
+
+          ARGS=("${OBJECTS[0]}")
+          for o in "${OBJECTS[@]:1}"; do ARGS+=(-object "$o"); done
+          "$TOOLS/llvm-cov" export -format=lcov -instr-profile="$PROFDATA" "${ARGS[@]}" \
+            -ignore-filename-regex='([\\/](\.cargo|\.rustup|rustc)[\\/])|llvm-cov-target|[\\/]tests[\\/]' \
+            > coverage/desktop.lcov
+
+          # LCOV → Cobertura (chỉ phần bước summary bên dưới cần: tổng + <class filename> + <line>).
+          node -e '
+            const fs = require("fs");
+            const files = new Map(); let cur = null;
+            for (const l of fs.readFileSync("coverage/desktop.lcov", "utf8").split(/\r?\n/)) {
+              if (l.startsWith("SF:")) { cur = files.get(l.slice(3)) || new Map(); files.set(l.slice(3), cur); }
+              else if (l.startsWith("DA:") && cur) {
+                const [n, h] = l.slice(3).split(",").map(Number);
+                cur.set(n, Math.max(cur.get(n) || 0, h));
+              }
+            }
+            let covered = 0, valid = 0; const classes = [];
+            const esc = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+            for (const [f, lines] of files) {
+              const rows = [...lines].sort((a, b) => a[0] - b[0]);
+              valid += rows.length; covered += rows.filter(([, h]) => h > 0).length;
+              classes.push(`<class name="${esc(f)}" filename="${esc(f)}"><lines>` +
+                rows.map(([n, h]) => `<line number="${n}" hits="${h}"/>`).join("") + "</lines></class>");
+            }
+            const rate = valid ? covered / valid : 0;
+            fs.writeFileSync("coverage/desktop-coverage.xml",
+              `<?xml version="1.0"?>\n<coverage line-rate="${rate}" branch-rate="0" lines-covered="${covered}" lines-valid="${valid}" branches-covered="0" branches-valid="0">` +
+              `<packages><package name="desktop"><classes>${classes.join("")}</classes></package></packages></coverage>\n`);
+            console.log(`Fallback coverage: ${(rate * 100).toFixed(1)}% (${covered}/${valid}, ${files.size} file)`);
+          '
 
       # Dùng Node đọc Cobertura XML thay cho irongut/CodeCoverageSummary (Docker action chỉ chạy trên Linux).
       - name: Code Coverage Summary & Extract percentage
