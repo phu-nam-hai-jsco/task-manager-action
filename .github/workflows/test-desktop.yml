@@ -169,7 +169,7 @@ jobs:
             core.setOutput('trigger', process.env.TRIGGER);
 
   test:
-    name: Run Tests
+    name: Run Tests (Windows)
     needs: resolve
     runs-on: windows-latest
     timeout-minutes: 45
@@ -180,8 +180,6 @@ jobs:
       PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
       HEAD_SHA: ${{ needs.resolve.outputs.ref }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      # Coverage chỉ cần khi có PR để comment, hoặc khi chạy trên main để cập nhật badge
-      WITH_COVERAGE: ${{ needs.resolve.outputs.pr_number != '' || needs.resolve.outputs.is_main == 'true' }}
       # Caller repo context (reusable workflow chạy với context của caller)
       MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
       STATUS_CONTEXT: Desktop Test
@@ -311,10 +309,6 @@ jobs:
         with:
           components: llvm-tools-preview
 
-      - name: Install cargo-llvm-cov
-        if: env.WITH_COVERAGE == 'true'
-        uses: taiki-e/install-action@c2e5d2ce8920c881761c4cabb41434daa1f95687 # cargo-llvm-cov
-
       - name: Cache Cargo registry & build
         uses: actions/cache@v6
         with:
@@ -329,91 +323,98 @@ jobs:
 
       - name: Run tests
         id: tests
-        if: env.WITH_COVERAGE != 'true'
         working-directory: ${{ env.DESKTOP_ROOT }}
         env:
           RUSTFLAGS: ''
         run: cargo test --workspace --all-features
 
+  # Coverage chạy trên Linux: trên Windows/MSVC (rustc 1.100) llvm-cov không đọc được coverage
+  # mapping của binary ("no coverage data found" ở mọi object dù test pass và có .profraw).
+  # Job `test` (Windows) vẫn chạy cargo test để bắt lỗi code cfg(windows).
+  # Chỉ cần khi có PR để comment, hoặc khi chạy trên main để cập nhật badge.
+  coverage:
+    name: Coverage (Linux)
+    needs: resolve
+    if: needs.resolve.outputs.pr_number != '' || needs.resolve.outputs.is_main == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DESKTOP_ROOT: desktop
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - name: Resolve source repository
+        id: source
+        env:
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.source_repository || github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+
+      - name: Create read token
+        id: read-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          permission-contents: read
+
+      - name: Checkout Desktop Repository
+        uses: actions/checkout@v7
+        with:
+          repository: phu-nam-hai-jsco/task-manager-desktop
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-desktop' && needs.resolve.outputs.ref) || 'main' }}
+          fetch-depth: 1
+          token: ${{ steps.read-token.outputs.token }}
+          path: desktop
+
+      - name: Install system dependencies (Tauri / Linux)
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libsoup-3.0-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@c2e5d2ce8920c881761c4cabb41434daa1f95687 # cargo-llvm-cov
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/artifacts/target
+          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cov-
+
       - name: Run tests with coverage
         id: tests_cov
-        if: env.WITH_COVERAGE == 'true'
         working-directory: ${{ env.DESKTOP_ROOT }}
-        env:
-          RUSTFLAGS: ''
-          # Target-dir tuyệt đối, một kiểu dấu phân cách (desktop repo đặt `artifacts/target` tương đối).
-          CARGO_TARGET_DIR: ${{ github.workspace }}\${{ env.DESKTOP_ROOT }}\target
         run: |
           mkdir -p coverage
-          cargo llvm-cov --workspace --all-features --no-report
-          if cargo llvm-cov report --cobertura --output-path coverage/desktop-coverage.xml; then
-            exit 0
-          fi
-
-          # Fallback: trên Windows `cargo llvm-cov report` có thể lỗi "no coverage data found" vì
-          # một object không có coverage mapping (vd cdylib của Tauri) làm llvm-cov từ chối CẢ bộ.
-          # Thử từng object của các package trong workspace, bỏ object lỗi rồi tự export.
-          echo "::warning::cargo llvm-cov report lỗi — thử export từng object (fallback)"
-          # Tool là .exe native: truyền đường dẫn dạng `D:/...` (cygpath -m), không dựa vào MSYS tự đổi.
-          TARGET="$(cygpath -u "$CARGO_TARGET_DIR")/llvm-cov-target"
-          TOOLS="$(cygpath -u "$(rustc --print sysroot)")/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
-          PROFDATA="$(cygpath -m "$TARGET")/fallback.profdata"
-          mapfile -t PROFRAWS < <(find "$TARGET" -maxdepth 1 -name '*.profraw' -exec cygpath -m {} \;)
-          echo "${#PROFRAWS[@]} profraw file"
-          "$TOOLS/llvm-profdata" merge -sparse "${PROFRAWS[@]}" -o "$PROFDATA"
-
-          PKGS=$(cargo metadata --no-deps --format-version 1 \
-            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).packages.map(p=>p.name).join(" ")))')
-          OBJECTS=()
-          for pkg in $PKGS; do
-            while IFS= read -r obj; do
-              obj="$(cygpath -m "$obj")"
-              case "$(basename "$obj")" in build_script_*|build-script-*) continue ;; esac
-              if err=$("$TOOLS/llvm-cov" export -summary-only -instr-profile="$PROFDATA" "$obj" 2>&1 >/dev/null); then
-                echo "✓ $obj"; OBJECTS+=("$obj")
-              else
-                echo "✗ bỏ qua $obj: $err"
-              fi
-            done < <(find "$TARGET/debug" -path "*/build/$pkg/*/out/*" \( -name '*.exe' -o -name '*.dll' \) 2>/dev/null)
-          done
-          [ ${#OBJECTS[@]} -gt 0 ] || { echo "::error::Không object nào có coverage data"; exit 1; }
-
-          ARGS=("${OBJECTS[0]}")
-          for o in "${OBJECTS[@]:1}"; do ARGS+=(-object "$o"); done
-          "$TOOLS/llvm-cov" export -format=lcov -instr-profile="$PROFDATA" "${ARGS[@]}" \
-            -ignore-filename-regex='([\\/](\.cargo|\.rustup|rustc)[\\/])|llvm-cov-target|[\\/]tests[\\/]' \
-            > coverage/desktop.lcov
-
-          # LCOV → Cobertura (chỉ phần bước summary bên dưới cần: tổng + <class filename> + <line>).
-          node -e '
-            const fs = require("fs");
-            const files = new Map(); let cur = null;
-            for (const l of fs.readFileSync("coverage/desktop.lcov", "utf8").split(/\r?\n/)) {
-              if (l.startsWith("SF:")) { cur = files.get(l.slice(3)) || new Map(); files.set(l.slice(3), cur); }
-              else if (l.startsWith("DA:") && cur) {
-                const [n, h] = l.slice(3).split(",").map(Number);
-                cur.set(n, Math.max(cur.get(n) || 0, h));
-              }
-            }
-            let covered = 0, valid = 0; const classes = [];
-            const esc = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-            for (const [f, lines] of files) {
-              const rows = [...lines].sort((a, b) => a[0] - b[0]);
-              valid += rows.length; covered += rows.filter(([, h]) => h > 0).length;
-              classes.push(`<class name="${esc(f)}" filename="${esc(f)}"><lines>` +
-                rows.map(([n, h]) => `<line number="${n}" hits="${h}"/>`).join("") + "</lines></class>");
-            }
-            const rate = valid ? covered / valid : 0;
-            fs.writeFileSync("coverage/desktop-coverage.xml",
-              `<?xml version="1.0"?>\n<coverage line-rate="${rate}" branch-rate="0" lines-covered="${covered}" lines-valid="${valid}" branches-covered="0" branches-valid="0">` +
-              `<packages><package name="desktop"><classes>${classes.join("")}</classes></package></packages></coverage>\n`);
-            console.log(`Fallback coverage: ${(rate * 100).toFixed(1)}% (${covered}/${valid}, ${files.size} file)`);
-          '
+          cargo llvm-cov --workspace --all-features --cobertura --output-path coverage/desktop-coverage.xml
 
       # Dùng Node đọc Cobertura XML thay cho irongut/CodeCoverageSummary (Docker action chỉ chạy trên Linux).
       - name: Code Coverage Summary & Extract percentage
         id: coverage
-        if: env.WITH_COVERAGE == 'true'
         run: |
           node -e '
             const fs = require("fs");
@@ -525,7 +526,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload coverage reports
-        if: always() && env.WITH_COVERAGE == 'true'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: desktop-coverage-reports
@@ -533,24 +534,81 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Build PR report
-        if: always() && env.PR_NUMBER != ''
+      - name: Upload coverage summary (for report job)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-coverage-summary
+          path: code-coverage-results.md
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # Gộp kết quả test (Windows) + coverage (Linux) + build app → commit status "Desktop Test"
+  # và một comment báo cáo trên PR của repo gọi.
+  report:
+    name: Report
+    needs: [resolve, test, coverage, build]
+    if: always() && needs.resolve.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.resolve.outputs.ref }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
+      STATUS_CONTEXT: Desktop Test
+      TEST_RESULT: ${{ needs.test.result }}
+      COVERAGE_RESULT: ${{ needs.coverage.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      # Test (Windows) phải xanh; coverage được phép skipped (không có PR / không phải main).
+      CONCLUSION: ${{ (needs.test.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.coverage.result)) && 'success' || 'failure' }}
+    steps:
+      - name: Resolve source repository
+        id: source
         env:
-          JOB_STATUS: ${{ job.status }}
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.source_repository || github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create report token
+        id: report-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          repositories: ${{ steps.source.outputs.name }}
+          permission-contents: write
+          permission-statuses: write
+
+      - name: Download coverage summary
+        if: needs.coverage.result != 'skipped'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-coverage-summary
+
+      - name: Build PR report
+        if: env.PR_NUMBER != ''
+        env:
           TRIGGER: ${{ needs.resolve.outputs.trigger }}
           CALLER_RUN_URL: ${{ needs.resolve.outputs.caller_run_url }}
-          INSTALL: ${{ steps.install.outcome }}
-          TESTS: ${{ steps.tests_cov.outcome }}
         run: |
           icon() { case "$1" in success) echo "✅ Passed";; failure) echo "❌ Failed";; cancelled) echo "🚫 Cancelled";; *) echo "⏭️ Skipped";; esac; }
-          [ "$JOB_STATUS" = "success" ] && RESULT="✅ Passed" || RESULT="❌ $JOB_STATUS"
+          [ "$CONCLUSION" = "success" ] && RESULT="✅ Passed" || RESULT="❌ failure"
           {
             echo "## 🧪 Desktop Test — $RESULT"
             echo
             echo "| Step | Result |"
             echo "|------|--------|"
-            echo "| Install dependencies | $(icon "$INSTALL") |"
-            echo "| Cargo test (llvm-cov) | $(icon "$TESTS") |"
+            echo "| Cargo test (Windows) | $(icon "$TEST_RESULT") |"
+            echo "| Coverage (Linux, llvm-cov) | $(icon "$COVERAGE_RESULT") |"
+            echo "| Build frontend exe → desktop app (Windows) | $(icon "$BUILD_RESULT") |"
             echo
             if [ -f code-coverage-results.md ]; then
               sed 's/Code Coverage/Desktop Coverage/g' code-coverage-results.md
@@ -560,16 +618,16 @@ jobs:
             [ -n "$CALLER_RUN_URL" ] && CALLER=" · [caller run](${CALLER_RUN_URL})"
             echo "<sub>🔗 [workflow run #${GITHUB_RUN_NUMBER}](${RUN_URL})${CALLER} · commit ${HEAD_SHA} · trigger: ${TRIGGER} · $(date -u '+%Y-%m-%d %H:%M UTC')</sub>"
           } > pr-report.md
+          cat pr-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set final status on caller repo commit
-        if: always() && env.HEAD_SHA != ''
+        if: env.HEAD_SHA != ''
         env:
           GH_TOKEN: ${{ steps.report-token.outputs.token }}
-          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
         run: |
           gh api "repos/$MAIN_REPO/statuses/$HEAD_SHA" \
-            -f state="$STATE" -f target_url="$RUN_URL" \
-            -f description="$STATUS_CONTEXT $STATE" -f context="$STATUS_CONTEXT" --silent \
+            -f state="$CONCLUSION" -f target_url="$RUN_URL" \
+            -f description="$STATUS_CONTEXT $CONCLUSION" -f context="$STATUS_CONTEXT" --silent \
             || echo "::warning::Không thể set final status trên $MAIN_REPO@$HEAD_SHA"
 
       # Không comment trực tiếp bằng PAT (comment sẽ mang tên user → ci-dispatcher coi là người).
@@ -577,11 +635,10 @@ jobs:
       # ở caller repo đăng comment (sticky, hoặc quote-reply comment lệnh) + thả 👍/👎 bằng GITHUB_TOKEN
       # (github-actions[bot]).
       - name: Send report to caller repo
-        if: always() && env.PR_NUMBER != ''
+        if: env.PR_NUMBER != ''
         uses: actions/github-script@v9
         env:
           COMMENT_ID: ${{ needs.resolve.outputs.comment_id }}
-          CONCLUSION: ${{ job.status }}
         with:
           github-token: ${{ steps.report-token.outputs.token }}
           script: |
