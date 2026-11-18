@@ -620,3 +620,213 @@ jobs:
             ];
             await core.summary.addHeading(`🧪 Test report → ${repo}`, 3).addTable(rows).write();
             core.info(`Report sent to ${owner}/${repo} (PR #${process.env.PR_NUMBER}, ${process.env.CONCLUSION})`);
+
+  # Build app Desktop đầy đủ (song song với job test), đúng thứ tự pipeline phát hành:
+  #   1. Build FE thành `work-management-frontend.exe` (next-bun-compile, scripts/build-next-for-desktop.ts)
+  #   2. Chuẩn bị sidecars + `tauri build` (bộ cài NSIS, không ký) — cần exe của bước 1 trong resources/.
+  # Kết quả báo bằng commit status riêng "Desktop Build" trên commit của repo gọi.
+  build:
+    name: Build Desktop App
+    needs: resolve
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.resolve.outputs.ref }}
+      SOURCE_REPO: ${{ needs.resolve.outputs.source_repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      MAIN_REPO: ${{ needs.resolve.outputs.source_repository || github.repository }}
+      STATUS_CONTEXT: Desktop Build
+      SIDECAR_TARGET: x86_64-pc-windows-msvc
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Resolve source repository
+        id: source
+        env:
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.source_repository || github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^(TanNhatCMS|phu-nam-hai-jsco)/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Source repository is not allowed."
+            exit 1
+          fi
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create read token
+        id: read-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          permission-contents: read
+
+      - name: Create report token
+        id: report-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          repositories: ${{ steps.source.outputs.name }}
+          permission-contents: read
+          permission-pull-requests: read
+          permission-statuses: write
+
+      - name: Set pending status on caller repo commit
+        if: env.HEAD_SHA != ''
+        env:
+          GH_TOKEN: ${{ steps.report-token.outputs.token }}
+        run: |
+          gh api "repos/$MAIN_REPO/statuses/$HEAD_SHA" \
+            -f state=pending -f target_url="$RUN_URL" \
+            -f description="Build Desktop App in progress..." -f context="$STATUS_CONTEXT" --silent \
+            || echo "::warning::Không thể set pending status trên $MAIN_REPO@$HEAD_SHA"
+
+      # Nhánh frontend: PR/ref của frontend khi nguồn là frontend; ngược lại dùng nhánh frontend
+      # trùng tên với nhánh desktop (vd PR desktop từ `dev` → frontend `dev`), không có thì `main`.
+      - name: Resolve frontend ref
+        id: fe-ref
+        env:
+          READ_TOKEN: ${{ steps.read-token.outputs.token }}
+          REPORT_TOKEN: ${{ steps.report-token.outputs.token }}
+          INPUT_BRANCH: ${{ github.event.client_payload.branch || inputs.branch || '' }}
+        run: |
+          set -euo pipefail
+          FE_REPO=phu-nam-hai-jsco/work-management-frontend
+          if [ "$SOURCE_REPO" = "$FE_REPO" ]; then
+            echo "ref=$HEAD_SHA" >> "$GITHUB_OUTPUT"; echo "frontend ref: $HEAD_SHA (nguồn là frontend)"; exit 0
+          fi
+          BRANCH="$INPUT_BRANCH"
+          if [ -n "$PR_NUMBER" ]; then
+            BRANCH=$(GH_TOKEN="$REPORT_TOKEN" gh api "repos/$MAIN_REPO/pulls/$PR_NUMBER" --jq .head.ref 2>/dev/null || echo "$BRANCH")
+          fi
+          REF=main
+          if [ -n "$BRANCH" ] && GH_TOKEN="$READ_TOKEN" gh api "repos/$FE_REPO/branches/$BRANCH" --silent 2>/dev/null; then
+            REF="$BRANCH"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "desktop branch: ${BRANCH:-<không rõ>} → frontend ref: $REF"
+
+      - name: Checkout Desktop Repository
+        uses: actions/checkout@v7
+        with:
+          repository: phu-nam-hai-jsco/task-manager-desktop
+          ref: ${{ (needs.resolve.outputs.source_repository == 'phu-nam-hai-jsco/task-manager-desktop' && needs.resolve.outputs.ref) || 'main' }}
+          fetch-depth: 1
+          token: ${{ steps.read-token.outputs.token }}
+          path: desktop
+
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@v7
+        with:
+          repository: phu-nam-hai-jsco/work-management-frontend
+          ref: ${{ steps.fe-ref.outputs.ref }}
+          fetch-depth: 1
+          token: ${{ steps.read-token.outputs.token }}
+          path: frontend
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - name: Cache Bun, Next.js & Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            frontend/.next/cache
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/artifacts/target
+          key: ${{ runner.os }}-desktop-build-${{ hashFiles('desktop/Cargo.lock', 'desktop/bun.lock', 'frontend/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-build-
+
+      - name: Install dependencies
+        id: install
+        run: |
+          (cd frontend && bun install --frozen-lockfile)
+          (cd desktop && bun install --frozen-lockfile)
+
+      # Bước 1: FE → work-management-frontend.exe (bắt buộc có trước khi build app).
+      - name: Build frontend exe
+        id: build_fe
+        working-directory: desktop
+        env:
+          NEXT_PUBLIC_QLCV_BUILD_CHANNEL: production
+        run: |
+          bun run build:next:desktop
+          test -f resources/work-management-frontend.exe
+          ls -lh resources/work-management-frontend.exe
+
+      # Bước 2: sidecars + tauri build (giống scripts/build-desktop.ts, bỏ beforeBuildCommand vì FE đã build).
+      - name: Build desktop app
+        id: build_app
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          bun scripts/prepare-sidecars.ts "$SIDECAR_TARGET"
+          SIDECAR_CONF=$(bun scripts/sidecar-bundle-config.ts "$SIDECAR_TARGET" | tail -n 1)
+          # CI chỉ kiểm tra build: bỏ beforeBuildCommand (FE đã build ở bước 1) và tắt updater
+          # artifacts (cần TAURI_SIGNING_PRIVATE_KEY, chỉ có ở pipeline phát hành).
+          echo '{"build":{"beforeBuildCommand":""},"bundle":{"createUpdaterArtifacts":false}}' \
+            > "$RUNNER_TEMP/tauri-ci-override.json"
+          bunx tauri build \
+            --config tauri.conf.json \
+            --config tauri.bundle.merge.json \
+            --config "$SIDECAR_CONF" \
+            --config "$RUNNER_TEMP/tauri-ci-override.json"
+          ls -lh artifacts/target/release/bundle/nsis/
+
+      - name: Upload installer
+        if: steps.build_app.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-installer
+          path: desktop/artifacts/target/release/bundle/nsis/*.exe
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          BUILD_FE: ${{ steps.build_fe.outcome }}
+          BUILD_APP: ${{ steps.build_app.outcome }}
+          FE_REF: ${{ steps.fe-ref.outputs.ref }}
+        run: |
+          icon() { case "$1" in success) echo "✅ Passed";; failure) echo "❌ Failed";; cancelled) echo "🚫 Cancelled";; *) echo "⏭️ Skipped";; esac; }
+          {
+            echo "## 🏗️ Desktop Build"
+            echo
+            echo "| Step | Result |"
+            echo "|------|--------|"
+            echo "| Install dependencies | $(icon "$INSTALL") |"
+            echo "| Build frontend exe (frontend \`$FE_REF\`) | $(icon "$BUILD_FE") |"
+            echo "| Build desktop app (tauri build) | $(icon "$BUILD_APP") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set final status on caller repo commit
+        if: always() && env.HEAD_SHA != ''
+        env:
+          GH_TOKEN: ${{ steps.report-token.outputs.token }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api "repos/$MAIN_REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" -f target_url="$RUN_URL" \
+            -f description="$STATUS_CONTEXT $STATE" -f context="$STATUS_CONTEXT" --silent \
+            || echo "::warning::Không thể set final status trên $MAIN_REPO@$HEAD_SHA"
