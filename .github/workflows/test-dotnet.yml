@@ -298,27 +298,26 @@ jobs:
           dotnet tool install --global dotnet-reportgenerator-globaltool
           reportgenerator -reports:"coverage/**/coverage.cobertura.xml" -targetdir:"coverage/merged" -reporttypes:"Cobertura"
 
-      - name: Code Coverage Summary
-        uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
+      # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
+      # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
+      - name: Checkout coverage report script
+        uses: actions/checkout@v7
         with:
-          filename: ${{ env.DOTNET_DIR }}/coverage/merged/Cobertura.xml
-          badge: true
-          fail_below_min: false
-          format: markdown
-          hide_branch_rate: false
-          hide_complexity: true
-          indicators: true
-          output: both
-          thresholds: '50 75'
+          repository: phu-nam-hai-jsco/task-manager-action
+          ref: ${{ github.repository == 'phu-nam-hai-jsco/task-manager-action' && github.sha || 'main' }}
+          path: .ci-scripts
+          sparse-checkout: .github/scripts
+          fetch-depth: 1
 
-      - name: Extract coverage percentage
+      # Báo cáo chi tiết: tổng Line/Branch, bảng theo cụm, file cần bổ sung test (comment PR) và
+      # bảng đầy đủ mọi file (Job Summary). Ngưỡng: ✅ ≥ 80% · ⚠️ 50–79% · ❌ < 50% (line coverage).
+      - name: Code Coverage Summary & Extract percentage
         id: coverage
-        working-directory: ${{ env.DOTNET_DIR }}
-        run: |
-          COVERAGE=$(grep -oP 'line-rate="\K[^"]+' coverage/merged/Cobertura.xml | head -1)
-          COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc | xargs printf "%.1f")
-          echo "percentage=${COVERAGE_PCT}" >> $GITHUB_OUTPUT
-          echo "Dotnet Coverage: ${COVERAGE_PCT}%"
+        env:
+          COVERAGE_XML: ${{ env.DOTNET_DIR }}/coverage/merged/Cobertura.xml
+          REPORT_TITLE: Dotnet Coverage
+          GROUP_DEPTH: '2'
+        run: node .ci-scripts/.github/scripts/coverage-summary.mjs
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.

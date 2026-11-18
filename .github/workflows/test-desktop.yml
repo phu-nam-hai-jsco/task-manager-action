@@ -386,9 +386,22 @@ jobs:
         with:
           node-version: 26
 
-      - name: Setup Rust toolchain
+      # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
+      # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
+      - name: Checkout coverage report script
+        uses: actions/checkout@v7
+        with:
+          repository: phu-nam-hai-jsco/task-manager-action
+          ref: ${{ github.repository == 'phu-nam-hai-jsco/task-manager-action' && github.sha || 'main' }}
+          path: .ci-scripts
+          sparse-checkout: .github/scripts
+          fetch-depth: 1
+
+      # Branch coverage (`--branch` = -Z coverage-options=branch) chỉ có trên nightly.
+      - name: Setup Rust toolchain (nightly, cho branch coverage)
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: nightly
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
@@ -401,117 +414,25 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             desktop/artifacts/target
-          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('desktop/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-cov-nightly-${{ hashFiles('desktop/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-cov-
+            ${{ runner.os }}-cargo-cov-nightly-
 
       - name: Run tests with coverage
         id: tests_cov
         working-directory: ${{ env.DESKTOP_ROOT }}
         run: |
           mkdir -p coverage
-          cargo llvm-cov --workspace --all-features --cobertura --output-path coverage/desktop-coverage.xml
+          cargo llvm-cov --workspace --all-features --branch --cobertura --output-path coverage/desktop-coverage.xml
 
-      # Dùng Node đọc Cobertura XML thay cho irongut/CodeCoverageSummary (Docker action chỉ chạy trên Linux).
       - name: Code Coverage Summary & Extract percentage
         id: coverage
-        run: |
-          node -e '
-            const fs = require("fs");
-            const xml = fs.readFileSync(process.env.DESKTOP_ROOT + "/coverage/desktop-coverage.xml", "utf8");
-            const attr = (k) => (xml.match(new RegExp(k + "=\"([^\"]+)\"")) || [])[1];
-            const lr = (Number(attr("line-rate") || 0) * 100).toFixed(1);
-            const lc = attr("lines-covered") || "0";
-            const lv = attr("lines-valid") || "0";
-            const br = (Number(attr("branch-rate") || 0) * 100).toFixed(1);
-            const bc = attr("branches-covered") || "0";
-            const bv = attr("branches-valid") || "0";
-            const icon = (pct) => (pct >= 75 ? "🟢" : pct >= 50 ? "🟡" : "🔴");
-            const badge = icon(Number(lr));
-
-            // Gom số dòng theo file (một file có thể nằm ở nhiều <class>): line -> hits lớn nhất.
-            const files = new Map();
-            const classRe = /<class\b[^>]*\bfilename="([^"]+)"[^>]*>([\s\S]*?)<\/class>/g;
-            // Thứ tự thuộc tính tuỳ công cụ (cargo-llvm-cov ghi `hits` trước `number`).
-            const lineRe = /<line\b([^>]*)>/g;
-            const attrOf = (attrs, name) => (attrs.match(new RegExp(`\\b${name}="(\\d+)"`)) || [])[1];
-            const rel = (f) => {
-              const n = f.replace(/\\/g, "/");
-              const m = n.match(/(?:^|\/)((?:src|packages)\/.*)$/);
-              return m ? m[1] : n;
-            };
-            for (const [, filename, body] of xml.matchAll(classRe)) {
-              const key = rel(filename);
-              const lines = files.get(key) || new Map();
-              for (const [, attrs] of body.matchAll(lineRe)) {
-                const num = attrOf(attrs, "number");
-                const hits = attrOf(attrs, "hits");
-                if (num === undefined || hits === undefined) continue;
-                lines.set(num, Math.max(lines.get(num) || 0, Number(hits)));
-              }
-              files.set(key, lines);
-            }
-
-            // Nhóm theo module: src/<module>, packages/<tên>/src/<module>; file nằm thẳng
-            // trong src gộp vào "src" / "packages/<tên>/src".
-            const groupOf = (f) => {
-              const parts = f.split("/");
-              if (parts[0] === "packages" && parts[2] === "src" && parts.length > 4) return parts.slice(0, 4).join("/");
-              if (parts[0] === "packages" && parts.length > 2) return parts.slice(0, Math.min(3, parts.length - 1)).join("/");
-              if (parts[0] === "src" && parts.length > 2) return parts.slice(0, 2).join("/");
-              return parts[0] === "src" ? "src" : parts.slice(0, -1).join("/") || f;
-            };
-            const stat = (lines) => {
-              let covered = 0;
-              for (const h of lines.values()) if (h > 0) covered++;
-              return { covered, total: lines.size };
-            };
-            const groups = new Map();
-            const fileRows = [];
-            for (const [f, lines] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-              const s = stat(lines);
-              if (!s.total) continue;
-              fileRows.push([f, s]);
-              const g = groups.get(groupOf(f)) || { covered: 0, total: 0, files: 0 };
-              g.covered += s.covered; g.total += s.total; g.files++;
-              groups.set(groupOf(f), g);
-            }
-            const pct = (s) => (s.total ? (s.covered / s.total) * 100 : 0);
-            const row = (name, s, extra = "") =>
-              `| \`${name}\` | ${icon(pct(s))} ${pct(s).toFixed(1)}% | ${s.covered} / ${s.total} |${extra}`;
-
-            const md = [
-              "### Desktop Coverage",
-              "",
-              "| Metric | Coverage | Covered / Total |",
-              "|--------|----------|-----------------|",
-              `| Line | ${badge} ${lr}% | ${lc} / ${lv} |`,
-              `| Branch | ${br}% | ${bc} / ${bv} |`,
-              "",
-              "#### Theo khu vực (src / packages)",
-              "",
-              "| Khu vực | Line | Covered / Total | Files |",
-              "|---------|------|-----------------|-------|",
-              ...[...groups.entries()]
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([name, s]) => row(name, s, ` ${s.files} |`)),
-              "",
-              "<details><summary>Chi tiết theo file</summary>",
-              "",
-              "| File | Line | Covered / Total |",
-              "|------|------|-----------------|",
-              ...fileRows.map(([f, s]) => row(f, s)),
-              "",
-              "</details>",
-            ].join("\n") + "\n";
-            fs.writeFileSync("code-coverage-results.md", md);
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `percentage=${lr}\n`);
-            console.log(`Desktop Coverage: ${lr}% (${groups.size} khu vực, ${fileRows.length} file)`);
-            if (Number(lv) > 0 && fileRows.length === 0) {
-              console.log("::warning::Cobertura có số liệu nhưng không đọc được file nào — kiểm tra lại định dạng <class>/<line>.");
-            }
-          '
+        env:
+          COVERAGE_XML: ${{ env.DESKTOP_ROOT }}/coverage/desktop-coverage.xml
+          REPORT_TITLE: Desktop Coverage
+          # src/<module>, packages/<tên>/src/<module>
+          GROUP_DEPTH: '4'
+        run: node .ci-scripts/.github/scripts/coverage-summary.mjs
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
@@ -752,8 +673,10 @@ jobs:
             -f description="Build Desktop App in progress..." -f context="$STATUS_CONTEXT" --silent \
             || echo "::warning::Không thể set pending status trên $MAIN_REPO@$HEAD_SHA"
 
-      # Nhánh frontend: PR/ref của frontend khi nguồn là frontend; ngược lại dùng nhánh frontend
-      # trùng tên với nhánh desktop (vd PR desktop từ `dev` → frontend `dev`), không có thì `main`.
+      # Nhánh frontend (frontend mới dùng bun + next-bun-compile, hiện chỉ có trên `dev`):
+      # - nguồn là frontend → đúng commit đó;
+      # - nhánh desktop: lấy từ PR, từ input/payload, hoặc nhánh đang trỏ vào commit (push không kèm
+      #   tên nhánh) → frontend cùng tên nếu có; nhánh desktop khác `main` → frontend `dev`; còn lại `main`.
       - name: Resolve frontend ref
         id: fe-ref
         env:
@@ -770,9 +693,25 @@ jobs:
           if [ -n "$PR_NUMBER" ]; then
             BRANCH=$(GH_TOKEN="$REPORT_TOKEN" gh api "repos/$MAIN_REPO/pulls/$PR_NUMBER" --jq .head.ref 2>/dev/null || echo "$BRANCH")
           fi
-          REF=main
-          if [ -n "$BRANCH" ] && GH_TOKEN="$READ_TOKEN" gh api "repos/$FE_REPO/branches/$BRANCH" --silent 2>/dev/null; then
+          if [ -z "$PR_NUMBER" ] && [ -n "$HEAD_SHA" ]; then
+            # Không có PR: nhánh nào đang trỏ vào commit này (push không kèm tên nhánh, hoặc chạy tay với
+            # input `branch` mặc định `main` nhưng SHA thuộc nhánh khác). Giữ nhánh được truyền nếu nó
+            # trỏ vào commit; nếu không thì ưu tiên main, rồi dev, rồi nhánh đầu tiên tìm được.
+            HEADS=$(GH_TOKEN="$READ_TOKEN" gh api "repos/$MAIN_REPO/commits/$HEAD_SHA/branches-where-head" --jq '.[].name' 2>/dev/null || true)
+            echo "nhánh trỏ vào $HEAD_SHA: $(echo $HEADS)"
+            if [ -n "$HEADS" ] && ! printf '%s\n' "$HEADS" | grep -qxF "$BRANCH"; then
+              for candidate in main dev $HEADS; do
+                if printf '%s\n' "$HEADS" | grep -qxF "$candidate"; then BRANCH="$candidate"; break; fi
+              done
+            fi
+          fi
+          fe_has() { [ -n "$1" ] && GH_TOKEN="$READ_TOKEN" gh api "repos/$FE_REPO/branches/$1" --silent 2>/dev/null; }
+          if fe_has "$BRANCH"; then
             REF="$BRANCH"
+          elif [ "$BRANCH" != "main" ] && fe_has dev; then
+            REF=dev
+          else
+            REF=main
           fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "desktop branch: ${BRANCH:-<không rõ>} → frontend ref: $REF"
@@ -823,9 +762,19 @@ jobs:
 
       - name: Install dependencies
         id: install
+        env:
+          FE_REF: ${{ steps.fe-ref.outputs.ref }}
         run: |
+          # Frontend cho Desktop phải cài bằng bun (bun.lock + next-bun-compile). Không có bun.lock thì
+          # `bun install` sẽ lặng lẽ chuyển đổi pnpm-lock.yaml và build hỏng ở bước sau.
+          if [ ! -f frontend/bun.lock ]; then
+            echo "::error::Frontend '$FE_REF' chưa chuyển sang bun (không có bun.lock) — không build được frontend exe. Merge nhánh dùng bun (dev) vào '$FE_REF' hoặc tạo nhánh frontend cùng tên với nhánh desktop."
+            exit 1
+          fi
           (cd frontend && bun install --frozen-lockfile)
           (cd desktop && bun install --frozen-lockfile)
+          test -f frontend/node_modules/next-bun-compile/dist/index.js \
+            || { echo "::error::Frontend '$FE_REF' thiếu next-bun-compile sau khi bun install."; exit 1; }
 
       # Bước 1: FE → work-management-frontend.exe (bắt buộc có trước khi build app).
       - name: Build frontend exe
