@@ -432,7 +432,9 @@ jobs:
             // Gom số dòng theo file (một file có thể nằm ở nhiều <class>): line -> hits lớn nhất.
             const files = new Map();
             const classRe = /<class\b[^>]*\bfilename="([^"]+)"[^>]*>([\s\S]*?)<\/class>/g;
-            const lineRe = /<line\b[^>]*\bnumber="(\d+)"[^>]*\bhits="(\d+)"/g;
+            // Thứ tự thuộc tính tuỳ công cụ (cargo-llvm-cov ghi `hits` trước `number`).
+            const lineRe = /<line\b([^>]*)>/g;
+            const attrOf = (attrs, name) => (attrs.match(new RegExp(`\\b${name}="(\\d+)"`)) || [])[1];
             const rel = (f) => {
               const n = f.replace(/\\/g, "/");
               const m = n.match(/(?:^|\/)((?:src|packages)\/.*)$/);
@@ -441,7 +443,10 @@ jobs:
             for (const [, filename, body] of xml.matchAll(classRe)) {
               const key = rel(filename);
               const lines = files.get(key) || new Map();
-              for (const [, num, hits] of body.matchAll(lineRe)) {
+              for (const [, attrs] of body.matchAll(lineRe)) {
+                const num = attrOf(attrs, "number");
+                const hits = attrOf(attrs, "hits");
+                if (num === undefined || hits === undefined) continue;
                 lines.set(num, Math.max(lines.get(num) || 0, Number(hits)));
               }
               files.set(key, lines);
@@ -503,6 +508,9 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `percentage=${lr}\n`);
             console.log(`Desktop Coverage: ${lr}% (${groups.size} khu vực, ${fileRows.length} file)`);
+            if (Number(lv) > 0 && fileRows.length === 0) {
+              console.log("::warning::Cobertura có số liệu nhưng không đọc được file nào — kiểm tra lại định dạng <class>/<line>.");
+            }
           '
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
