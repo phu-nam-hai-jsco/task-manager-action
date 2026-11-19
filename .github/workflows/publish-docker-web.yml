@@ -251,7 +251,11 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ steps.app-token.outputs.token }}
+          # GHCR không nhận token cài đặt GitHub App để ghi package của organization
+          # ("installation not allowed to Write organization package") → dùng GITHUB_TOKEN
+          # (permissions: packages: write). Package phải cấp quyền Write cho repo này
+          # (Package settings → Manage Actions access).
+          password: ${{ github.token }}
 
       - name: Docker metadata
         id: meta
