@@ -326,7 +326,7 @@ jobs:
           else
             export COVERAGE_XML="$XML"
           fi
-          bun .ci-scripts/.github/scripts/coverage-summary.mjs
+          bun .ci-scripts/.github/scripts/coverage-summary.ts
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
