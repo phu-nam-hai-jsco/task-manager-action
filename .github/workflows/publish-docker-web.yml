@@ -1,7 +1,7 @@
 name: Docker Publish Web Build
 run-name: "${{ github.workflow }} · ${{ github.sha }}"
 # Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
-# Build image Web (Next.js static export + nginx) từ `docker/nextjs/Dockerfile` (COPY `frontend/**`).
+# Build image Web (next-bun-compile) từ `Dockerfile` trong repo `frontend` (standalone).
 
 on:
   workflow_call:
@@ -127,53 +127,41 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      # Chỉ checkout repo root (không recursive) để lấy .dockerignore + package.json,
-      # sau đó chỉ checkout đúng 2 submodule cần cho Web là frontend và docker (bỏ qua server, desktop, database).
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.source_repository || github.repository }}
-          ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Resolve pinned commits of frontend + docker
+      # Chỉ checkout đúng 1 repo là frontend (không checkout repo chính hay docker):
+      # frontend/Dockerfile + entrypoint.sh + .dockerignore đã tự đủ để build standalone.
+      - name: Resolve pinned commit of frontend
         id: pins
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SRC_REPO: ${{ inputs.source_repository || github.repository }}
           SRC_REF: ${{ inputs.ref || github.sha }}
         run: |
-          for m in frontend docker; do
-            info=$(gh api "repos/${SRC_REPO}/contents/${m}?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
-            type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
-            if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
-              echo "::error::'${m}' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
-              exit 1
-            fi
-            repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
-            echo "${m}_repo=${repo}" >> "$GITHUB_OUTPUT"
-            echo "${m}_sha=${sha}" >> "$GITHUB_OUTPUT"
-            echo "${m}: ${repo}@${sha}"
-          done
+          set -euo pipefail
+          case "$SRC_REPO" in
+            */task-manager-frontend|*/work-management-frontend)
+              echo "frontend_repo=${SRC_REPO}" >> "$GITHUB_OUTPUT"
+              echo "frontend_sha=${SRC_REF}" >> "$GITHUB_OUTPUT"
+              echo "frontend: ${SRC_REPO}@${SRC_REF} (direct)"
+              ;;
+            *)
+              info=$(gh api "repos/${SRC_REPO}/contents/frontend?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
+              type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
+              if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
+                echo "::error::'frontend' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
+                exit 1
+              fi
+              repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
+              echo "frontend_repo=${repo}" >> "$GITHUB_OUTPUT"
+              echo "frontend_sha=${sha}" >> "$GITHUB_OUTPUT"
+              echo "frontend: ${repo}@${sha}"
+              ;;
+          esac
 
       - name: Checkout frontend
         uses: actions/checkout@v7
         with:
           repository: ${{ steps.pins.outputs.frontend_repo }}
           ref: ${{ steps.pins.outputs.frontend_sha }}
-          path: frontend
-          fetch-depth: 1
-          persist-credentials: false
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Checkout docker
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ steps.pins.outputs.docker_repo }}
-          ref: ${{ steps.pins.outputs.docker_sha }}
-          path: docker
           fetch-depth: 1
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
@@ -283,13 +271,13 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
-          file: docker/nextjs/Dockerfile
+          file: Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ inputs.staged && steps.stage.outputs.tag || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Layer deps (pnpm install) được giữ cache qua registry buildcache + gha
-          # để không phải reinstall khi pnpm-lock.yaml không đổi.
+          # Layer deps (bun install --frozen-lockfile) được giữ cache qua registry buildcache + gha
+          # để không phải reinstall khi bun.lock không đổi.
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/task-manager-web${{ steps.lane.outputs.name_suffix }}:buildcache${{ steps.lane.outputs.suffix }}
             type=gha,scope=publish-web

@@ -771,7 +771,7 @@ jobs:
             echo "::error::Frontend '$FE_REF' chưa chuyển sang bun (không có bun.lock) — không build được frontend exe. Merge nhánh dùng bun (dev) vào '$FE_REF' hoặc tạo nhánh frontend cùng tên với nhánh desktop."
             exit 1
           fi
-          (cd frontend && bun install --frozen-lockfile)
+          (cd frontend && bun install --frozen-lockfile --production)
           (cd desktop && bun install --frozen-lockfile)
           test -f frontend/node_modules/next-bun-compile/dist/index.js \
             || { echo "::error::Frontend '$FE_REF' thiếu next-bun-compile sau khi bun install."; exit 1; }

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Dựng báo cáo coverage chi tiết từ file Cobertura XML (cargo-llvm-cov, Vitest, coverlet/reportgenerator).
+ * Dựng báo cáo coverage chi tiết từ file Cobertura XML (cargo-llvm-cov, coverlet) hoặc LCOV (bun test).
  *
  * Env:
- *   COVERAGE_XML      đường dẫn file Cobertura (bắt buộc)
+ *   COVERAGE_LCOV     đường dẫn file LCOV (.info)
+ *   COVERAGE_XML      đường dẫn file Cobertura XML (bắt buộc nếu không đặt COVERAGE_LCOV)
  *   REPORT_TITLE      tiêu đề, vd "Desktop Coverage" (mặc định "Coverage")
  *   GROUP_DEPTH       số cấp thư mục dùng làm "cụm" (mặc định 2)
  *   THRESHOLD_GOOD    % line coverage coi là đủ (mặc định 80)
@@ -15,9 +16,14 @@
 import fs from 'node:fs'
 
 const env = process.env
+const lcovPath = env.COVERAGE_LCOV
 const xmlPath = env.COVERAGE_XML
-if (!xmlPath || !fs.existsSync(xmlPath)) {
-  console.log(`::error::Không tìm thấy file coverage: ${xmlPath ?? '(chưa đặt COVERAGE_XML)'}`)
+const useLcov = Boolean(lcovPath)
+const reportPath = lcovPath || xmlPath
+if (!reportPath || !fs.existsSync(reportPath)) {
+  console.log(
+    `::error::Không tìm thấy file coverage: ${reportPath ?? '(chưa đặt COVERAGE_LCOV / COVERAGE_XML)'}`,
+  )
   process.exit(1)
 }
 const title = env.REPORT_TITLE || 'Coverage'
@@ -27,59 +33,113 @@ const warn = Number(env.THRESHOLD_WARN || 50)
 const maxFileRows = Number(env.MAX_FILE_ROWS || 40)
 const outputMd = env.OUTPUT_MD || 'code-coverage-results.md'
 
-const xml = fs.readFileSync(xmlPath, 'utf8')
-
-// ---- tiện ích đọc thuộc tính (thứ tự thuộc tính tuỳ công cụ)
 const attr = (attrs, name) => {
   const m = attrs.match(new RegExp(`\\b${name}="([^"]*)"`))
   return m ? m[1] : undefined
 }
-const rootAttrs = (xml.match(/<coverage\b([^>]*)>/) || [])[1] || ''
 const num = (v) => (v === undefined || v === '' ? 0 : Number(v))
 
-// ---- đường dẫn tương đối: bỏ tiền tố <source>, chuẩn hoá dấu phân cách
-const sources = [...xml.matchAll(/<source>([^<]*)<\/source>/g)]
-  .map((m) => m[1].trim().replace(/\\/g, '/').replace(/\/+$/, ''))
-  .filter(Boolean)
-  .sort((a, b) => b.length - a.length)
-const rel = (file) => {
-  let f = file.replace(/\\/g, '/')
-  for (const s of sources) {
-    if (f.startsWith(`${s}/`)) {
-      f = f.slice(s.length + 1)
-      break
+const files = new Map()
+let rootAttrs = ''
+
+if (useLcov) {
+  const lcov = fs.readFileSync(lcovPath, 'utf8')
+  let curKey = null
+  let curLines = new Map()
+  let curBranchHits = new Map()
+
+  const flushRecord = () => {
+    if (!curKey) return
+    const entry = files.get(curKey) || { lines: new Map(), branches: new Map() }
+    for (const [ln, hits] of curLines) {
+      entry.lines.set(ln, Math.max(entry.lines.get(ln) || 0, hits))
+    }
+    const perLineBranch = new Map()
+    for (const [brKey, hits] of curBranchHits) {
+      const ln = brKey.split(':', 1)[0]
+      const prev = perLineBranch.get(ln) || [0, 0]
+      perLineBranch.set(ln, [prev[0] + (hits > 0 ? 1 : 0), prev[1] + 1])
+    }
+    for (const [ln, [cov, tot]] of perLineBranch) {
+      const prev = entry.branches.get(ln) || [0, 0]
+      entry.branches.set(ln, [Math.max(prev[0], cov), Math.max(prev[1], tot)])
+    }
+    files.set(curKey, entry)
+    curKey = null
+    curLines = new Map()
+    curBranchHits = new Map()
+  }
+
+  for (const rawLine of lcov.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    if (line.startsWith('SF:')) {
+      flushRecord()
+      curKey = line.slice(3).trim().replace(/\\/g, '/').replace(/^\.\//, '')
+    } else if (line.startsWith('DA:') && curKey) {
+      const [ln, hits] = line.slice(3).split(',')
+      if (ln !== undefined && hits !== undefined) {
+        curLines.set(ln, Math.max(curLines.get(ln) || 0, Number(hits) || 0))
+      }
+    } else if (line.startsWith('BRDA:') && curKey) {
+      const [ln, blk, br, taken] = line.slice(5).split(',')
+      if (ln !== undefined && blk !== undefined && br !== undefined) {
+        const key = `${ln}:${blk}:${br}`
+        const hits = taken && taken !== '-' ? Number(taken) || 0 : 0
+        curBranchHits.set(key, Math.max(curBranchHits.get(key) || 0, hits))
+      }
+    } else if (line === 'end_of_record') {
+      flushRecord()
     }
   }
-  return f.replace(/^\.\//, '')
-}
+  flushRecord()
+} else {
+  const xml = fs.readFileSync(xmlPath, 'utf8')
+  rootAttrs = (xml.match(/<coverage\b([^>]*)>/) || [])[1] || ''
 
-// ---- gom số liệu theo file: line -> hits (max), line -> [covered, total] nhánh (max)
-const files = new Map()
-const classRe = /<class\b([^>]*)>([\s\S]*?)<\/class>/g
-const lineRe = /<line\b([^>]*)\/?>/g
-for (const [, classAttrs, body] of xml.matchAll(classRe)) {
-  const filename = attr(classAttrs, 'filename')
-  if (!filename) continue
-  const key = rel(filename)
-  const entry = files.get(key) || { lines: new Map(), branches: new Map() }
-  // Chỉ đọc khối <lines> cấp class (sau </methods>): dòng của <method> có thể không nằm trong
-  // khối này (Vitest/istanbul) và tổng của header được tính từ khối cấp class.
-  const classLines = body.split('</methods>').pop()
-  for (const [, a] of classLines.matchAll(lineRe)) {
-    const n = attr(a, 'number')
-    const hits = attr(a, 'hits')
-    if (n === undefined || hits === undefined) continue
-    entry.lines.set(n, Math.max(entry.lines.get(n) || 0, Number(hits)))
-    if (attr(a, 'branch') === 'true') {
-      const cc = attr(a, 'condition-coverage') || ''
-      const m = cc.match(/\((\d+)\/(\d+)\)/)
-      if (m) {
-        const prev = entry.branches.get(n) || [0, 0]
-        entry.branches.set(n, [Math.max(prev[0], Number(m[1])), Math.max(prev[1], Number(m[2]))])
+  // ---- đường dẫn tương đối: bỏ tiền tố <source>, chuẩn hoá dấu phân cách
+  const sources = [...xml.matchAll(/<source>([^<]*)<\/source>/g)]
+    .map((m) => m[1].trim().replace(/\\/g, '/').replace(/\/+$/, ''))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+  const rel = (file) => {
+    let f = file.replace(/\\/g, '/')
+    for (const s of sources) {
+      if (f.startsWith(`${s}/`)) {
+        f = f.slice(s.length + 1)
+        break
       }
     }
+    return f.replace(/^\.\//, '')
   }
-  files.set(key, entry)
+
+  // ---- gom số liệu theo file: line -> hits (max), line -> [covered, total] nhánh (max)
+  const classRe = /<class\b([^>]*)>([\s\S]*?)<\/class>/g
+  const lineRe = /<line\b([^>]*)\/?>/g
+  for (const [, classAttrs, body] of xml.matchAll(classRe)) {
+    const filename = attr(classAttrs, 'filename')
+    if (!filename) continue
+    const key = rel(filename)
+    const entry = files.get(key) || { lines: new Map(), branches: new Map() }
+    // Chỉ đọc khối <lines> cấp class (sau </methods>): dòng của <method> có thể không nằm trong
+    // khối này (Vitest/istanbul) và tổng của header được tính từ khối cấp class.
+    const classLines = body.split('</methods>').pop()
+    for (const [, a] of classLines.matchAll(lineRe)) {
+      const n = attr(a, 'number')
+      const hits = attr(a, 'hits')
+      if (n === undefined || hits === undefined) continue
+      entry.lines.set(n, Math.max(entry.lines.get(n) || 0, Number(hits)))
+      if (attr(a, 'branch') === 'true') {
+        const cc = attr(a, 'condition-coverage') || ''
+        const m = cc.match(/\((\d+)\/(\d+)\)/)
+        if (m) {
+          const prev = entry.branches.get(n) || [0, 0]
+          entry.branches.set(n, [Math.max(prev[0], Number(m[1])), Math.max(prev[1], Number(m[2]))])
+        }
+      }
+    }
+    files.set(key, entry)
+  }
 }
 
 // Đường dẫn vẫn tuyệt đối (không có <source> khớp, vd reportgenerator) → bỏ thư mục cha chung.

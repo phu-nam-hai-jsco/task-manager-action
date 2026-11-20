@@ -1,7 +1,7 @@
 name: Docker Publish Migrator Build
 run-name: "${{ github.workflow }} · ${{ github.sha }}"
 # Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
-# Build image DB migrator (Prisma migrate deploy) từ `docker/db-migrator/Dockerfile`.
+# Build image DB migrator (Prisma migrate deploy) từ `Dockerfile` trong repo `database`.
 
 on:
   workflow_call:
@@ -117,53 +117,41 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      # Chỉ checkout repo root (không recursive) để lấy .dockerignore + package.json,
-      # sau đó chỉ checkout đúng 2 submodule cần cho Migrator là database và docker.
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.source_repository || github.repository }}
-          ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Resolve pinned commits of database + docker
+      # Chỉ checkout đúng 1 repo là database (không checkout repo chính hay docker):
+      # database/Dockerfile + license-gate.sh + scripts đã tự đủ để build standalone.
+      - name: Resolve pinned commit of database
         id: pins
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SRC_REPO: ${{ inputs.source_repository || github.repository }}
           SRC_REF: ${{ inputs.ref || github.sha }}
         run: |
-          for m in database docker; do
-            info=$(gh api "repos/${SRC_REPO}/contents/${m}?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
-            type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
-            if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
-              echo "::error::'${m}' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
-              exit 1
-            fi
-            repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
-            echo "${m}_repo=${repo}" >> "$GITHUB_OUTPUT"
-            echo "${m}_sha=${sha}" >> "$GITHUB_OUTPUT"
-            echo "${m}: ${repo}@${sha}"
-          done
+          set -euo pipefail
+          case "$SRC_REPO" in
+            */task-manager-database|*/work-management-database)
+              echo "database_repo=${SRC_REPO}" >> "$GITHUB_OUTPUT"
+              echo "database_sha=${SRC_REF}" >> "$GITHUB_OUTPUT"
+              echo "database: ${SRC_REPO}@${SRC_REF} (direct)"
+              ;;
+            *)
+              info=$(gh api "repos/${SRC_REPO}/contents/database?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
+              type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
+              if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
+                echo "::error::'database' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
+                exit 1
+              fi
+              repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
+              echo "database_repo=${repo}" >> "$GITHUB_OUTPUT"
+              echo "database_sha=${sha}" >> "$GITHUB_OUTPUT"
+              echo "database: ${repo}@${sha}"
+              ;;
+          esac
 
       - name: Checkout database
         uses: actions/checkout@v7
         with:
           repository: ${{ steps.pins.outputs.database_repo }}
           ref: ${{ steps.pins.outputs.database_sha }}
-          path: database
-          fetch-depth: 1
-          persist-credentials: false
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Checkout docker
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ steps.pins.outputs.docker_repo }}
-          ref: ${{ steps.pins.outputs.docker_sha }}
-          path: docker
           fetch-depth: 1
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
@@ -220,7 +208,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
-          file: docker/db-migrator/Dockerfile
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ inputs.staged && steps.stage.outputs.tag || steps.meta.outputs.tags }}

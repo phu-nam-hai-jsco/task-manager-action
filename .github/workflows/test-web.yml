@@ -296,7 +296,7 @@ jobs:
       - name: Run tests with coverage
         id: tests
         working-directory: ${{ env.WEB_ROOT }}
-        run: bun run test -- --coverage
+        run: bun run test:coverage
 
       # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
       # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
@@ -314,7 +314,7 @@ jobs:
       - name: Code Coverage Summary & Extract percentage
         id: coverage
         env:
-          COVERAGE_XML: ${{ env.WEB_ROOT }}/coverage/cobertura-coverage.xml
+          COVERAGE_LCOV: ${{ env.WEB_ROOT }}/coverage/lcov.info
           REPORT_TITLE: Web Coverage
           GROUP_DEPTH: '2'
         run: node .ci-scripts/.github/scripts/coverage-summary.mjs
@@ -344,7 +344,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: web-coverage-reports
-          path: ${{ env.WEB_ROOT }}/coverage/cobertura-coverage.xml
+          path: ${{ env.WEB_ROOT }}/coverage/lcov.info
           retention-days: 7
           if-no-files-found: ignore
 
@@ -367,7 +367,7 @@ jobs:
             echo "|------|--------|"
             echo "| Install dependencies | $(icon "$INSTALL") |"
             echo "| Inline styles | $(icon "$INLINE_STYLES") |"
-            echo "| Vitest | $(icon "$TESTS") |"
+            echo "| Bun Test | $(icon "$TESTS") |"
             echo
             if [ -f code-coverage-results.md ]; then
               sed 's/Code Coverage/Web Coverage/g' code-coverage-results.md
