@@ -296,7 +296,9 @@ jobs:
         working-directory: ${{ env.DOTNET_DIR }}
         run: |
           dotnet tool install --global dotnet-reportgenerator-globaltool
-          reportgenerator -reports:"coverage/**/coverage.cobertura.xml" -targetdir:"coverage/merged" -reporttypes:"Cobertura"
+          # Bỏ code do compiler/source generator sinh ra (artifacts/obj, obj): không phải code viết tay nên không tính coverage
+          reportgenerator -reports:"coverage/**/coverage.cobertura.xml" -targetdir:"coverage/merged" -reporttypes:"Cobertura" \
+            -filefilters:"-*/artifacts/obj/*;-*/obj/*"
 
       # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
       # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
