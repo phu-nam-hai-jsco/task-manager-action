@@ -215,16 +215,17 @@ từ repo khác sẽ **không** cập nhật badge.
 
 ## 🧹 Dọn lịch sử Actions
 
-`cleanup-runs.yml` chạy **Chủ nhật 02:17 UTC** hằng tuần hoặc chạy tay (mặc định `dry_run = true` để xem trước).
-Chỉ xoá run **đã hoàn thành**; luôn giữ lại `keep_latest` run mới nhất của mỗi workflow, phần còn lại bị xoá khi quá hạn theo kết quả:
+`cleanup-runs.yml` dùng [`igorjs/gh-actions-clean-workflow`](https://github.com/igorjs/gh-actions-clean-workflow) (ghim SHA),
+chạy **hằng ngày 02:17 UTC** hoặc chạy tay (mặc định `dry_run = true` để xem trước).
 
-| Kết quả run | Mặc định xoá khi quá |
-| ----------- | -------------------- |
-| `success` | 14 ngày (`success_days`) |
-| `failure` / `timed_out` / `startup_failure` | 30 ngày (`failure_days`) |
-| `cancelled` / `skipped` / còn lại | 3 ngày (`cancelled_days`) |
+| Input | Mặc định | Ý nghĩa |
+| ----- | -------- | ------- |
+| `runs_older_than` | `7` | Chỉ xoá run **đã hoàn thành** cũ hơn N ngày (mọi kết quả dùng chung ngưỡng) |
+| `runs_to_keep` | `3` | Trong số run quá hạn, giữ lại N run mới nhất của mỗi workflow |
+| `workflow_names` | _(trống = tất cả)_ | Chỉ dọn các workflow có tên này (phân tách bằng dấu phẩy) |
 
-`keep_latest` mặc định 5. Kết quả tổng hợp ghi ở Summary của run.
+API GitHub chỉ trả tối đa 1000 run mỗi truy vấn nên một lần chạy xoá tối đa ~1000 run; lịch hằng ngày sẽ dọn dần phần tồn đọng.
+Kết quả tổng hợp ghi ở Summary của run.
 
 ## 🔧 Reusable workflows
 
