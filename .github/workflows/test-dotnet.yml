@@ -300,6 +300,11 @@ jobs:
           reportgenerator -reports:"coverage/**/coverage.cobertura.xml" -targetdir:"coverage/merged" -reporttypes:"Cobertura" \
             -filefilters:"-*/artifacts/obj/*;-*/obj/*"
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.5"
+
       # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
       # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
       - name: Checkout coverage report script
@@ -319,7 +324,7 @@ jobs:
           COVERAGE_XML: ${{ env.DOTNET_DIR }}/coverage/merged/Cobertura.xml
           REPORT_TITLE: Dotnet Coverage
           GROUP_DEPTH: '2'
-        run: node .ci-scripts/.github/scripts/coverage-summary.mjs
+        run: bun .ci-scripts/.github/scripts/coverage-summary.ts
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.

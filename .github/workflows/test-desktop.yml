@@ -381,10 +381,10 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev libsoup-3.0-dev
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          node-version: 26
+          bun-version: "1.4.5"
 
       # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
       # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
@@ -432,7 +432,7 @@ jobs:
           REPORT_TITLE: Desktop Coverage
           # src/<module>, packages/<tên>/src/<module>
           GROUP_DEPTH: '4'
-        run: node .ci-scripts/.github/scripts/coverage-summary.mjs
+        run: bun .ci-scripts/.github/scripts/coverage-summary.ts
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
@@ -771,7 +771,9 @@ jobs:
             echo "::error::Frontend '$FE_REF' chưa chuyển sang bun (không có bun.lock) — không build được frontend exe. Merge nhánh dùng bun (dev) vào '$FE_REF' hoặc tạo nhánh frontend cùng tên với nhánh desktop."
             exit 1
           fi
-          (cd frontend && bun install --frozen-lockfile --production)
+          # `--production` không cài devDependencies (husky) nhưng vẫn chạy script `prepare: husky`
+          # → "command not found". Build CI không cần git hook nên bỏ script này trước khi cài.
+          (cd frontend && bun pm pkg delete scripts.prepare && bun install --frozen-lockfile --production)
           (cd desktop && bun install --frozen-lockfile)
           test -f frontend/node_modules/next-bun-compile/dist/index.js \
             || { echo "::error::Frontend '$FE_REF' thiếu next-bun-compile sau khi bun install."; exit 1; }

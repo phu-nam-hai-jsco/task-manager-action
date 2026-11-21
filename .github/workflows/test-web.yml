@@ -265,11 +265,6 @@ jobs:
           fetch-depth: 1
           token: ${{ steps.read-token.outputs.token }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "26"
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -293,10 +288,17 @@ jobs:
         id: inline_styles
         run: bun run --if-present lint:inline-styles
 
+      # Hỗ trợ cả 2 giai đoạn của frontend: bun test (script `test:coverage`, xuất LCOV) và
+      # Vitest cũ (chỉ có `test`, xuất Cobertura) — branch/PR chưa migrate vẫn chạy được.
       - name: Run tests with coverage
         id: tests
         working-directory: ${{ env.WEB_ROOT }}
-        run: bun run test:coverage
+        run: |
+          if jq -e '.scripts["test:coverage"]' package.json > /dev/null; then
+            bun run test:coverage
+          else
+            bun run test -- --coverage
+          fi
 
       # Script dựng báo cáo coverage dùng chung (desktop / web / .NET). Chạy trong repo này thì lấy
       # đúng commit đang chạy; được repo khác gọi (workflow_call) thì lấy từ main.
@@ -314,10 +316,17 @@ jobs:
       - name: Code Coverage Summary & Extract percentage
         id: coverage
         env:
-          COVERAGE_LCOV: ${{ env.WEB_ROOT }}/coverage/lcov.info
           REPORT_TITLE: Web Coverage
           GROUP_DEPTH: '2'
-        run: node .ci-scripts/.github/scripts/coverage-summary.mjs
+        run: |
+          LCOV="$WEB_ROOT/coverage/lcov.info"
+          XML="$WEB_ROOT/coverage/cobertura-coverage.xml"
+          if [ -f "$LCOV" ]; then
+            export COVERAGE_LCOV="$LCOV"
+          else
+            export COVERAGE_XML="$XML"
+          fi
+          bun .ci-scripts/.github/scripts/coverage-summary.ts
 
       # Badge Gist được cập nhật ở workflow riêng (update-coverage-badge.yml): ở đây chỉ lưu số liệu
       # khi test head của main thành công, workflow kia tải artifact này rồi ghi lên Gist.
@@ -344,7 +353,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: web-coverage-reports
-          path: ${{ env.WEB_ROOT }}/coverage/lcov.info
+          path: |
+            ${{ env.WEB_ROOT }}/coverage/lcov.info
+            ${{ env.WEB_ROOT }}/coverage/cobertura-coverage.xml
           retention-days: 7
           if-no-files-found: ignore
 
