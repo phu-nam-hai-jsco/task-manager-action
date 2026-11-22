@@ -72,7 +72,7 @@ permissions:
 jobs:
   build-migrator:
     name: Build & Push DB Migrator
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
