@@ -19,7 +19,7 @@ concurrency:
 jobs:
   validate:
     name: Validate dispatch request
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
 
     outputs:
       source_repo: ${{ steps.validate.outputs.source_repo }}
@@ -94,7 +94,7 @@ jobs:
   claude:
     name: Run Claude on source PR
     needs: validate
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
