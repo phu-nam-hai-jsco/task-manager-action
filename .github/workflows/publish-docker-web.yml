@@ -82,7 +82,7 @@ permissions:
 jobs:
   build-web:
     name: Build & Push Web
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
 
     steps:
