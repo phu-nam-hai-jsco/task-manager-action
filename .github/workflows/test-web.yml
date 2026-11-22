@@ -82,7 +82,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve source ref
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     outputs:
       ref: ${{ steps.ref.outputs.ref }}
       source_repository: ${{ steps.ref.outputs.source_repository }}
@@ -171,7 +171,7 @@ jobs:
   test:
     name: Web Test
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     env:
       PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
