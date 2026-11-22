@@ -35,7 +35,7 @@ on:
         description: 'runs-on dạng JSON: "ubuntu-latest" (mặc định) hoặc ["self-hosted","label"]'
         type: string
         required: false
-        default: '["self-hosted","Linux","X64"]'
+        default: '"ubuntu-latest"'
 
 permissions:
   contents: read
