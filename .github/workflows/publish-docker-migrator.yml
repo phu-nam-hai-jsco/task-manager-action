@@ -220,17 +220,25 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Resolved version: $VERSION"
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/task-manager-migrator${{ inputs.branch == 'dev' && '-dev' || '' }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/task-manager-packages
-          tags: |
-            type=raw,value=latest,enable=${{ inputs.branch == 'main' || inputs.branch == 'dev' }}
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=sha,prefix=sha-,format=short
+      - name: Resolve lane prefix
+        id: lane
+        run: |
+          BRANCH="${{ inputs.branch }}"
+          if [ "$BRANCH" = "main" ]; then
+            echo "prefix=" >> $GITHUB_OUTPUT
+            echo "suffix=" >> $GITHUB_OUTPUT
+            echo "name_suffix=" >> $GITHUB_OUTPUT
+          elif [ "$BRANCH" = "dev" ]; then
+            # Dev lane: suffix vao TEN image (task-manager-migrator-dev), tag giu sach
+            echo "prefix=" >> $GITHUB_OUTPUT
+            echo "suffix=" >> $GITHUB_OUTPUT
+            echo "name_suffix=-dev" >> $GITHUB_OUTPUT
+          else
+            echo "prefix=${BRANCH}-" >> $GITHUB_OUTPUT
+            echo "suffix=-${BRANCH}" >> $GITHUB_OUTPUT
+            echo "name_suffix=" >> $GITHUB_OUTPUT
+          fi
+          echo "Branch: $BRANCH"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -246,6 +254,20 @@ jobs:
           # (Package settings → Manage Actions access).
           password: ${{ github.token }}
 
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.IMAGE_NAME }}${{ steps.lane.outputs.name_suffix }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/task-manager-packages
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest${{ steps.lane.outputs.suffix }}
+            type=raw,value=${{ steps.version.outputs.version }}${{ steps.lane.outputs.suffix }}
+            type=sha,prefix=${{ steps.lane.outputs.prefix }}sha-,format=short
+
       - name: Resolve staging tag
         id: stage
         env:
@@ -259,14 +281,18 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ inputs.staged && steps.stage.outputs.tag || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Layer deps (bun install --frozen-lockfile) được giữ cache qua registry buildcache + gha
+          # để không phải reinstall khi bun.lock không đổi.
           cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.IMAGE_NAME }}${{ inputs.branch == 'dev' && '-dev' || '' }}:latest
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.IMAGE_NAME }}${{ steps.lane.outputs.name_suffix }}:buildcache${{ steps.lane.outputs.suffix }}
             type=gha,scope=publish-migrator
-          cache-to: type=gha,mode=max,scope=publish-migrator
+          cache-to: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.IMAGE_NAME }}${{ steps.lane.outputs.name_suffix }}:buildcache${{ steps.lane.outputs.suffix }},mode=max
+            type=gha,mode=max,scope=publish-migrator
           provenance: false
           sbom: false
           build-args: |
@@ -310,8 +336,9 @@ jobs:
         run: |
           echo "## 🐳 DB Migrator Image Published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.IMAGE_NAME }}${{ inputs.branch == 'dev' && '-dev' || '' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.IMAGE_NAME }}${{ steps.lane.outputs.name_suffix }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Branch:** \`${{ inputs.branch }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Tags" >> "$GITHUB_STEP_SUMMARY"
