@@ -1,9 +1,15 @@
 name: Docker Publish Web Build
-run-name: "${{ github.workflow }} · ${{ github.sha }}"
+run-name: "${{ github.workflow }} · ${{ inputs.branch || github.event.client_payload.branch || 'main' }} · ${{ inputs.version || github.event.client_payload.version || 'auto' }} · ${{ inputs.ref || github.event.client_payload.ref || github.sha }}"
 # Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
 # Build image Web (next-bun-compile) từ `Dockerfile` trong repo `frontend` (standalone).
 
 on:
+  # Repo root (work-management) gửi repository_dispatch `build-docker-web` (mỗi image một event type riêng,
+  # thay cho build-docker.yml chung trước đây). client_payload:
+  #   { ref, version, branch, mode, encrypted_payload, run_url, source_repository? }
+  # Build ở chế độ staged (push tag tạm sha-* rồi dispatch promote sang task-manager-packages).
+  repository_dispatch:
+    types: [build-docker-web]
   workflow_call:
     inputs:
       ref:
@@ -103,7 +109,7 @@ on:
         default: false
     secrets:
       PAYLOAD_ENCRYPTION_KEY:
-        description: 'Khoá giải mã payload do repo root gửi (build-docker.yml)'
+        description: 'Khoá giải mã payload do repo root gửi (repository_dispatch build-docker-web)'
         required: false
       AG_GRID_LICENSE:
         description: 'Optional AG Grid license key (NEXT_PUBLIC_AG_GRID_LICENSE build arg)'
@@ -117,10 +123,18 @@ on:
 # reusable workflow là tên workflow của caller nên không dùng làm key; chỉ hủy run
 # trùng hệt cùng một build.
 concurrency:
-  group: publish-docker-web-${{ inputs.source_repository || github.repository }}-${{ inputs.branch }}-${{ inputs.ref || github.sha }}-${{ inputs.version }}-${{ inputs.pr_number }}
+  group: publish-docker-web-${{ inputs.source_repository || github.event.client_payload.source_repository || github.repository }}-${{ inputs.branch || github.event.client_payload.branch }}-${{ inputs.ref || github.event.client_payload.ref || github.sha }}-${{ inputs.version || github.event.client_payload.version }}-${{ inputs.pr_number }}
   cancel-in-progress: true
 
 env:
+  # Tham số chuẩn hoá cho cả 3 nguồn kích hoạt: workflow_call / workflow_dispatch (inputs)
+  # và repository_dispatch `build-docker-web` (client_payload). Chỉ đọc client_payload khi đúng event
+  # `build-docker-web` — trong workflow_call, github.event là event của caller.
+  IN_REF: ${{ github.event.action == 'build-docker-web' && github.event.client_payload.ref || inputs.ref }}
+  IN_VERSION: ${{ github.event.action == 'build-docker-web' && github.event.client_payload.version || inputs.version }}
+  IN_BRANCH: ${{ (github.event.action == 'build-docker-web' && github.event.client_payload.branch || inputs.branch) || 'main' }}
+  IN_SOURCE_REPOSITORY: ${{ github.event.action == 'build-docker-web' && (github.event.client_payload.source_repository || 'phu-nam-hai-jsco/work-management') || inputs.source_repository || github.repository }}
+  IN_STAGED: ${{ github.event.action == 'build-docker-web' || inputs.staged == true }}
   REGISTRY: ghcr.io
   # Ảnh publish về namespace của caller repo (GITHUB_TOKEN + packages:write đủ quyền push)
   OWNER: ${{ github.repository_owner }}
@@ -183,8 +197,8 @@ jobs:
         id: pins
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SRC_REPO: ${{ inputs.source_repository || github.repository }}
-          SRC_REF: ${{ inputs.ref || github.sha }}
+          SRC_REPO: ${{ env.IN_SOURCE_REPOSITORY }}
+          SRC_REF: ${{ env.IN_REF || github.sha }}
         run: |
           set -euo pipefail
           case "$SRC_REPO" in
@@ -230,8 +244,8 @@ jobs:
       - name: Resolve version
         id: version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ -n "$IN_VERSION" ]; then
+            VERSION="$IN_VERSION"
             echo "Source: workflow input"
           else
             VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "dev")
@@ -244,7 +258,7 @@ jobs:
       - name: Resolve lane prefix
         id: lane
         run: |
-          BRANCH="${{ inputs.branch }}"
+          BRANCH="$IN_BRANCH"
           if [ "$BRANCH" = "main" ]; then
             echo "prefix=" >> $GITHUB_OUTPUT
             echo "suffix=" >> $GITHUB_OUTPUT
@@ -264,7 +278,7 @@ jobs:
       - name: Parse env_json
         id: env_json
         env:
-          BRANCH_IN: ${{ inputs.branch }}
+          BRANCH_IN: ${{ env.IN_BRANCH }}
         run: |
           ENV_JSON='${{ inputs.env_json }}'
           # Devtool gửi env_json dạng base64:<json> để an toàn quoting trên mọi shell
@@ -363,7 +377,7 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ inputs.staged && steps.stage.outputs.tag || steps.meta.outputs.tags }}
+          tags: ${{ env.IN_STAGED == 'true' && steps.stage.outputs.tag || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Layer deps (bun install --frozen-lockfile) được giữ cache qua registry buildcache + gha
           # để không phải reinstall khi bun.lock không đổi.
@@ -394,7 +408,7 @@ jobs:
 
       # Chế độ staged: image mới chỉ có tag tạm sha-*; task-manager-packages gắn tag chính thức (latest, X.Y.Z).
       - name: Dispatch promote to task-manager-packages
-        if: ${{ inputs.staged }}
+        if: ${{ env.IN_STAGED == 'true' }}
         uses: actions/github-script@v9
         env:
           IMAGE: web
@@ -402,7 +416,7 @@ jobs:
           STAGE_TAG: ${{ steps.stage.outputs.tag }}
           TAGS: ${{ steps.meta.outputs.tags }}
           VERSION: ${{ steps.version.outputs.version }}
-          BRANCH: ${{ inputs.branch }}
+          BRANCH: ${{ env.IN_BRANCH }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
@@ -432,7 +446,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Image:** \`${{ env.REGISTRY }}/${{ env.OWNER }}/task-manager-web${{ steps.lane.outputs.name_suffix }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Branch:** \`${{ inputs.branch }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Branch:** \`${IN_BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Tags" >> "$GITHUB_STEP_SUMMARY"
