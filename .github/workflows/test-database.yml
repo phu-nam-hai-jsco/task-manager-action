@@ -184,8 +184,8 @@ jobs:
       STATUS_CONTEXT: Database Test
       # Repo database được checkout ở thư mục gốc (standalone)
       DB_ROOT: .
-      # true = schema lệch thì job FAIL. Đang false vì schema.prisma vẫn còn lệch so với migrations
-      # (FK ON DELETE, PK zalo_*, kiểu cột) — sửa hết rồi bật true.
+      # true = schema lệch thì job FAIL. schema.prisma đã khớp ở nhánh dev của task-manager-database;
+      # bật true khi bản đó lên main (test của repo khác checkout main của task-manager-database).
       SCHEMA_DRIFT_STRICT: 'false'
     steps:
       # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT.
@@ -322,6 +322,32 @@ jobs:
           esac
           echo "✅ Backup imported successfully"
 
+      # Backup lấy từ DB thật: migration đã áp mà file bị sửa sau đó → `migrate dev` sẽ đòi reset DB.
+      # `deploy` không kiểm tra checksum nên chỉ cảnh báo (sửa: bun src/fix_checksums.ts trên DB đó).
+      - name: Check migration checksums (backup vs files)
+        id: checksum
+        if: steps.backup.outputs.found == 'true'
+        run: |
+          if ! grep -q -- '--check' src/fix_checksums.ts 2>/dev/null; then
+            echo "status=unsupported" >> $GITHUB_OUTPUT
+            echo "ℹ️ Repo database chưa có fix_checksums.ts --check — bỏ qua"
+            exit 0
+          fi
+          set +e
+          bun src/fix_checksums.ts --check > checksum-check.txt 2>&1
+          rc=$?
+          set -e
+          cat checksum-check.txt
+          MODIFIED=$(grep -c '^MODIFIED' checksum-check.txt || true)
+          case $rc in
+            0) STATUS=clean ;;
+            2) STATUS=modified
+               echo "::warning title=Migration checksum::$MODIFIED migration bị sửa sau khi áp trên DB backup — migrate dev sẽ đòi reset; chạy bun src/fix_checksums.ts trên DB thật" ;;
+            *) STATUS=error; echo "::warning title=Migration checksum::Không kiểm tra được checksum" ;;
+          esac
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "modified=$MODIFIED" >> $GITHUB_OUTPUT
+
       - name: Run Prisma migrations
         id: migrate
         run: |
@@ -366,7 +392,7 @@ jobs:
         if: steps.backup.outputs.found == 'false'
         run: |
           echo "🌱 Running database seed..."
-          bun "$DB_ROOT/seed.ts" || {
+          bun "$DB_ROOT/src/seed.ts" || {
             echo "status=failed" >> $GITHUB_OUTPUT
             echo "❌ Seed failed!"
             exit 1
@@ -430,6 +456,74 @@ jobs:
           fi
           echo "status=$VERIFY_STATUS" >> $GITHUB_OUTPUT
 
+      # ---------- Image DB Migrator (Dockerfile của repo database) ----------
+      # Build y như publish-docker-migrator.yml nhưng KHÔNG push; rồi chạy chính image đó
+      # (license-gate → wait-db → migrate status → backup → migrate deploy) trên DB trống.
+      - name: Set up Docker Buildx
+        if: steps.migrate.outputs.status == 'passed'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build migrator image (no push)
+        id: docker-build
+        if: steps.migrate.outputs.status == 'passed'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: qlcv-migrator:ci
+          build-args: APP_VERSION=ci-${{ github.run_id }}
+          cache-from: type=gha,scope=migrator-test
+          cache-to: type=gha,scope=migrator-test,mode=max
+
+      - name: Run migrator container on empty DB
+        id: migrator
+        if: steps.docker-build.outcome == 'success'
+        env:
+          # Entrypoint chạy license-gate.sh: cần key ký hợp lệ (secret của task-manager-action)
+          ACTIVATION_KEY: ${{ secrets.ACTIVATION_KEY }}
+          MIGRATOR_DB: migrator_ci
+        run: |
+          set -o pipefail
+          if [ -z "$ACTIVATION_KEY" ]; then
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "::warning title=Migrator container::Thiếu secret ACTIVATION_KEY ở task-manager-action — đã build image nhưng không chạy được container"
+            exit 0
+          fi
+          mysql -h 127.0.0.1 -u root -ptest -e "DROP DATABASE IF EXISTS $MIGRATOR_DB; CREATE DATABASE $MIGRATOR_DB;"
+          run_migrator() {
+            docker run --rm --network host \
+              -e ACTIVATION_KEY -e MIGRATE_ENV=production \
+              -e DATABASE_URL="mysql://root:test@127.0.0.1:3306/$MIGRATOR_DB" \
+              qlcv-migrator:ci migrate
+          }
+          FAIL=""
+          echo "::group::Lần 1 — DB trống: backup → migrate deploy"
+          run_migrator 2>&1 | tee migrator-run1.log || FAIL="lần 1 exit ≠ 0"
+          echo "::endgroup::"
+
+          EXPECTED=$(find migrations -mindepth 1 -maxdepth 1 -type d | wc -l)
+          APPLIED=$(mysql -h 127.0.0.1 -u root -ptest -N -e \
+            "SELECT COUNT(*) FROM $MIGRATOR_DB._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;" 2>/dev/null || echo 0)
+          TABLES=$(mysql -h 127.0.0.1 -u root -ptest -N -e \
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$MIGRATOR_DB' AND table_type = 'BASE TABLE';")
+          [ "$APPLIED" = "$EXPECTED" ] || FAIL="${FAIL:+$FAIL; }áp $APPLIED/$EXPECTED migration"
+
+          echo "::group::Lần 2 — đã cập nhật: phải báo up-to-date, không migrate lại"
+          run_migrator 2>&1 | tee migrator-run2.log || FAIL="${FAIL:+$FAIL; }lần 2 exit ≠ 0"
+          echo "::endgroup::"
+          grep -q 'up-to-date' migrator-run2.log || FAIL="${FAIL:+$FAIL; }lần 2 không báo up-to-date"
+
+          echo "applied=$APPLIED/$EXPECTED" >> $GITHUB_OUTPUT
+          echo "tables=$TABLES" >> $GITHUB_OUTPUT
+          if [ -n "$FAIL" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "::error title=Migrator container::$FAIL"
+            exit 1
+          fi
+          echo "status=passed" >> $GITHUB_OUTPUT
+          echo "✅ Migrator: áp $APPLIED/$EXPECTED migration ($TABLES bảng), chạy lại báo up-to-date"
+
       - name: Build PR report
         if: always() && env.PR_NUMBER != ''
         env:
@@ -451,6 +545,12 @@ jobs:
           DB_VERSION: ${{ matrix.mariadb }}
           DRIFT: ${{ steps.drift.outputs.status }}
           DRIFT_COUNT: ${{ steps.drift.outputs.count }}
+          DOCKER_BUILD: ${{ steps.docker-build.outcome }}
+          CHECKSUM: ${{ steps.checksum.outputs.status }}
+          CHECKSUM_MODIFIED: ${{ steps.checksum.outputs.modified }}
+          MIGRATOR: ${{ steps.migrator.outputs.status }}
+          MIGRATOR_APPLIED: ${{ steps.migrator.outputs.applied }}
+          MIGRATOR_TABLES: ${{ steps.migrator.outputs.tables }}
         run: |
           # Verify đánh dấu failed nhưng step vẫn exit 0 → bước "Fail if verification failed" chưa chạy
           if [ "$JOB_STATUS" = "success" ] && [ "$VERIFY" != "failed" ]; then RESULT="✅ Passed"; else RESULT="❌ Failed"; fi
@@ -463,6 +563,23 @@ jobs:
           fi
           [ -z "$MISSING_TABLES" ] && MISSING_TXT="✅ None" || MISSING_TXT="$MISSING_TABLES"
           [ "$ADMIN_EXISTS" = "1" ] && ADMIN_TXT="✅ exists" || ADMIN_TXT="❌ missing"
+          case "$CHECKSUM" in
+            clean)    CHECKSUM_TXT="✅ Khớp file migration" ;;
+            modified) CHECKSUM_TXT="⚠️ $CHECKSUM_MODIFIED migration bị sửa sau khi áp (chạy \`bun src/fix_checksums.ts\` trên DB thật)" ;;
+            error)    CHECKSUM_TXT="⚠️ Không kiểm tra được" ;;
+            *)        CHECKSUM_TXT="⏭️ Not run" ;;
+          esac
+          case "$DOCKER_BUILD" in
+            success) DOCKER_TXT="✅ Built (\`qlcv-migrator:ci\`, không push)" ;;
+            failure) DOCKER_TXT="❌ Failed" ;;
+            *)       DOCKER_TXT="⏭️ Not run" ;;
+          esac
+          case "$MIGRATOR" in
+            passed)  MIGRATOR_TXT="✅ $MIGRATOR_APPLIED migration, $MIGRATOR_TABLES bảng; chạy lại up-to-date" ;;
+            failed)  MIGRATOR_TXT="❌ Failed ($MIGRATOR_APPLIED migration)" ;;
+            skipped) MIGRATOR_TXT="⚠️ Bỏ qua — thiếu secret ACTIVATION_KEY" ;;
+            *)       MIGRATOR_TXT="⏭️ Not run" ;;
+          esac
           case "$DRIFT" in
             clean) DRIFT_TXT="✅ Khớp schema.prisma" ;;
             drift) DRIFT_TXT="⚠️ Lệch ($DRIFT_COUNT thay đổi)" ;;
@@ -476,6 +593,7 @@ jobs:
             echo "|------|--------|"
             echo "| **MariaDB** | \`$DB_VERSION\` |"
             echo "| **Backup imported** | $BACKUP_TXT |"
+            echo "| **Migration checksum (backup)** | $CHECKSUM_TXT |"
             echo "| **Migration** | $MIGRATE_TXT |"
             echo "| **Seed** | $SEED_TXT |"
             echo "| **Tables** | $TABLE_COUNT |"
@@ -487,6 +605,8 @@ jobs:
             echo "| **Admin user** | $ADMIN_TXT |"
             echo "| **FK constraints** | $FK_COUNT |"
             echo "| **Schema drift** | $DRIFT_TXT |"
+            echo "| **Docker image** | $DOCKER_TXT |"
+            echo "| **Migrator container** | $MIGRATOR_TXT |"
             echo
             if [ "$DRIFT" = "drift" ]; then
               echo "<details>"
