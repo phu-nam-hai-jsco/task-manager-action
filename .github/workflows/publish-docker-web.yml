@@ -216,6 +216,17 @@ jobs:
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
 
+      # Dockerfile chạy `bun install --production`: không cài devDependencies (husky) nhưng vẫn
+      # chạy script `prepare: husky` → "husky: command not found" (exit 127). Image không cần
+      # git hook nên bỏ script này khỏi package.json trước khi build (giống test-desktop.yml).
+      - name: Strip husky prepare script
+        run: |
+          set -euo pipefail
+          if jq -e '.scripts.prepare? // "" | test("husky")' package.json > /dev/null; then
+            jq 'del(.scripts.prepare)' package.json > package.json.tmp && mv package.json.tmp package.json
+            echo "Đã bỏ scripts.prepare (husky) khỏi package.json"
+          fi
+
       - name: Resolve version
         id: version
         run: |
