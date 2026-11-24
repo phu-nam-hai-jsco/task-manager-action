@@ -148,10 +148,15 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Phiên bản MariaDB khai báo một chỗ: dùng cho image service và dòng báo cáo
+    # (services.*.image không đọc được `env`, nên dùng matrix một giá trị).
+    strategy:
+      matrix:
+        mariadb: ['12.3.3']
 
     services:
       mariadb:
-        image: mariadb:12.3.3
+        image: mariadb:${{ matrix.mariadb }}
         env:
           MARIADB_ROOT_PASSWORD: test
           MARIADB_DATABASE: test_qlcv
@@ -289,7 +294,9 @@ jobs:
       - name: Check for database backup
         id: backup
         run: |
-          BACKUP_FILE=$(find "$DB_ROOT/test/backup" -name "*.sql" -type f 2>/dev/null | head -1)
+          # Nhận .sql hoặc .sql.gz; nhiều file thì lấy file mới nhất theo tên (backup-YYYYMMDD-HHMMSS)
+          BACKUP_FILE=$(find "$DB_ROOT/test/backup" -type f \( -name "*.sql" -o -name "*.sql.gz" \) 2>/dev/null \
+            | sort | tail -1)
           if [ -n "$BACKUP_FILE" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
             echo "file=$BACKUP_FILE" >> $GITHUB_OUTPUT
@@ -305,7 +312,11 @@ jobs:
           BACKUP_FILE: ${{ steps.backup.outputs.file }}
         run: |
           echo "📥 Importing backup: $BACKUP_FILE"
-          mysql -h 127.0.0.1 -u root -ptest test_qlcv < "$BACKUP_FILE"
+          set -o pipefail
+          case "$BACKUP_FILE" in
+            *.gz) gunzip -c "$BACKUP_FILE" | mysql -h 127.0.0.1 -u root -ptest test_qlcv ;;
+            *)    mysql -h 127.0.0.1 -u root -ptest test_qlcv < "$BACKUP_FILE" ;;
+          esac
           echo "✅ Backup imported successfully"
 
       - name: Run Prisma migrations
@@ -411,6 +422,7 @@ jobs:
           SYSTEM_INFO: ${{ steps.verify.outputs.system_info }}
           ADMIN_EXISTS: ${{ steps.verify.outputs.admin_exists }}
           FK_COUNT: ${{ steps.verify.outputs.fk_count }}
+          DB_VERSION: ${{ matrix.mariadb }}
         run: |
           # Verify đánh dấu failed nhưng step vẫn exit 0 → bước "Fail if verification failed" chưa chạy
           if [ "$JOB_STATUS" = "success" ] && [ "$VERIFY" != "failed" ]; then RESULT="✅ Passed"; else RESULT="❌ Failed"; fi
@@ -428,7 +440,7 @@ jobs:
             echo
             echo "| Item | Result |"
             echo "|------|--------|"
-            echo "| **MariaDB** | \`12.3.2\` |"
+            echo "| **MariaDB** | \`$DB_VERSION\` |"
             echo "| **Backup imported** | $BACKUP_TXT |"
             echo "| **Migration** | $MIGRATE_TXT |"
             echo "| **Seed** | $SEED_TXT |"
