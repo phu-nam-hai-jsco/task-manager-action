@@ -342,6 +342,10 @@ jobs:
         run: |
           echo "🔍 Verifying database schema and data..."
 
+          # Phiên bản thật của server (vd "12.3.3-MariaDB-ubu2404" → "12.3.3"), không ghi cứng
+          DB_VERSION=$(mysql -h 127.0.0.1 -u root -ptest -N -e "SELECT VERSION();" 2>/dev/null || echo "unknown")
+          echo "db_version=${DB_VERSION%%-*}" >> $GITHUB_OUTPUT
+
           TABLE_COUNT=$(mysql -h 127.0.0.1 -u root -ptest -N -e \
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'test_qlcv' AND table_type = 'BASE TABLE';")
           echo "table_count=$TABLE_COUNT" >> $GITHUB_OUTPUT
@@ -411,6 +415,7 @@ jobs:
           SYSTEM_INFO: ${{ steps.verify.outputs.system_info }}
           ADMIN_EXISTS: ${{ steps.verify.outputs.admin_exists }}
           FK_COUNT: ${{ steps.verify.outputs.fk_count }}
+          DB_VERSION: ${{ steps.verify.outputs.db_version }}
         run: |
           # Verify đánh dấu failed nhưng step vẫn exit 0 → bước "Fail if verification failed" chưa chạy
           if [ "$JOB_STATUS" = "success" ] && [ "$VERIFY" != "failed" ]; then RESULT="✅ Passed"; else RESULT="❌ Failed"; fi
@@ -428,7 +433,7 @@ jobs:
             echo
             echo "| Item | Result |"
             echo "|------|--------|"
-            echo "| **MariaDB** | \`12.3.2\` |"
+            echo "| **MariaDB** | \`${DB_VERSION:-unknown}\` |"
             echo "| **Backup imported** | $BACKUP_TXT |"
             echo "| **Migration** | $MIGRATE_TXT |"
             echo "| **Seed** | $SEED_TXT |"
