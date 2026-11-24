@@ -184,8 +184,8 @@ jobs:
       STATUS_CONTEXT: Database Test
       # Repo database được checkout ở thư mục gốc (standalone)
       DB_ROOT: .
-      # true = schema lệch thì job FAIL. Đang false vì schema.prisma vẫn còn lệch so với migrations
-      # (FK ON DELETE, kiểu cột zalo_*/DATETIME) — sửa hết rồi bật true.
+      # true = schema lệch thì job FAIL. schema.prisma đã khớp ở nhánh dev của task-manager-database;
+      # bật true khi bản đó lên main (test của repo khác checkout main của task-manager-database).
       SCHEMA_DRIFT_STRICT: 'false'
     steps:
       # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT.
@@ -321,6 +321,32 @@ jobs:
             *)    mysql -h 127.0.0.1 -u root -ptest test_qlcv < "$BACKUP_FILE" ;;
           esac
           echo "✅ Backup imported successfully"
+
+      # Backup lấy từ DB thật: migration đã áp mà file bị sửa sau đó → `migrate dev` sẽ đòi reset DB.
+      # `deploy` không kiểm tra checksum nên chỉ cảnh báo (sửa: bun src/fix_checksums.ts trên DB đó).
+      - name: Check migration checksums (backup vs files)
+        id: checksum
+        if: steps.backup.outputs.found == 'true'
+        run: |
+          if ! grep -q -- '--check' src/fix_checksums.ts 2>/dev/null; then
+            echo "status=unsupported" >> $GITHUB_OUTPUT
+            echo "ℹ️ Repo database chưa có fix_checksums.ts --check — bỏ qua"
+            exit 0
+          fi
+          set +e
+          bun src/fix_checksums.ts --check > checksum-check.txt 2>&1
+          rc=$?
+          set -e
+          cat checksum-check.txt
+          MODIFIED=$(grep -c '^MODIFIED' checksum-check.txt || true)
+          case $rc in
+            0) STATUS=clean ;;
+            2) STATUS=modified
+               echo "::warning title=Migration checksum::$MODIFIED migration bị sửa sau khi áp trên DB backup — migrate dev sẽ đòi reset; chạy bun src/fix_checksums.ts trên DB thật" ;;
+            *) STATUS=error; echo "::warning title=Migration checksum::Không kiểm tra được checksum" ;;
+          esac
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "modified=$MODIFIED" >> $GITHUB_OUTPUT
 
       - name: Run Prisma migrations
         id: migrate
@@ -520,6 +546,8 @@ jobs:
           DRIFT: ${{ steps.drift.outputs.status }}
           DRIFT_COUNT: ${{ steps.drift.outputs.count }}
           DOCKER_BUILD: ${{ steps.docker-build.outcome }}
+          CHECKSUM: ${{ steps.checksum.outputs.status }}
+          CHECKSUM_MODIFIED: ${{ steps.checksum.outputs.modified }}
           MIGRATOR: ${{ steps.migrator.outputs.status }}
           MIGRATOR_APPLIED: ${{ steps.migrator.outputs.applied }}
           MIGRATOR_TABLES: ${{ steps.migrator.outputs.tables }}
@@ -535,6 +563,12 @@ jobs:
           fi
           [ -z "$MISSING_TABLES" ] && MISSING_TXT="✅ None" || MISSING_TXT="$MISSING_TABLES"
           [ "$ADMIN_EXISTS" = "1" ] && ADMIN_TXT="✅ exists" || ADMIN_TXT="❌ missing"
+          case "$CHECKSUM" in
+            clean)    CHECKSUM_TXT="✅ Khớp file migration" ;;
+            modified) CHECKSUM_TXT="⚠️ $CHECKSUM_MODIFIED migration bị sửa sau khi áp (chạy \`bun src/fix_checksums.ts\` trên DB thật)" ;;
+            error)    CHECKSUM_TXT="⚠️ Không kiểm tra được" ;;
+            *)        CHECKSUM_TXT="⏭️ Not run" ;;
+          esac
           case "$DOCKER_BUILD" in
             success) DOCKER_TXT="✅ Built (\`qlcv-migrator:ci\`, không push)" ;;
             failure) DOCKER_TXT="❌ Failed" ;;
@@ -559,6 +593,7 @@ jobs:
             echo "|------|--------|"
             echo "| **MariaDB** | \`$DB_VERSION\` |"
             echo "| **Backup imported** | $BACKUP_TXT |"
+            echo "| **Migration checksum (backup)** | $CHECKSUM_TXT |"
             echo "| **Migration** | $MIGRATE_TXT |"
             echo "| **Seed** | $SEED_TXT |"
             echo "| **Tables** | $TABLE_COUNT |"
