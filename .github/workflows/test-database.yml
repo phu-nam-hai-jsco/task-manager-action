@@ -483,6 +483,8 @@ jobs:
           # Entrypoint chạy license-gate.sh: cần key ký hợp lệ (secret của task-manager-action)
           ACTIVATION_KEY: ${{ secrets.ACTIVATION_KEY }}
           MIGRATOR_DB: migrator_ci
+          BACKUP_FOUND: ${{ steps.backup.outputs.found }}
+          DRIFT_STATUS: ${{ steps.drift.outputs.status }}
         run: |
           set -o pipefail
           if [ -z "$ACTIVATION_KEY" ]; then
@@ -514,6 +516,26 @@ jobs:
           echo "::endgroup::"
           grep -q 'up-to-date' migrator-run2.log || FAIL="${FAIL:+$FAIL; }lần 2 không báo up-to-date"
 
+          # Lần 3 — DB từ backup (DB thật, đã migrate ở bước trên): migration bị sửa sau khi áp thì
+          # entrypoint phải tự đồng bộ checksum (DB khớp schema.prisma) → --check sạch.
+          SYNC=""
+          if [ "$BACKUP_FOUND" = "true" ] && grep -q 'sync_checksums' entrypoint.sh; then
+            echo "::group::Lần 3 — DB từ backup: tự đồng bộ checksum"
+            docker run --rm --network host \
+              -e ACTIVATION_KEY -e MIGRATE_ENV=production \
+              -e DATABASE_URL="mysql://root:test@127.0.0.1:3306/$DATABASE_NAME" \
+              qlcv-migrator:ci migrate 2>&1 | tee migrator-run3.log || FAIL="${FAIL:+$FAIL; }lần 3 exit ≠ 0"
+            echo "::endgroup::"
+            if DATABASE_URL="mysql://root:test@127.0.0.1:3306/$DATABASE_NAME" bun src/fix_checksums.ts --check; then
+              SYNC="checksum backup sạch"
+            elif [ "$DRIFT_STATUS" = "clean" ]; then
+              FAIL="${FAIL:+$FAIL; }checksum backup vẫn lệch sau lần 3 dù DB khớp schema"
+            else
+              SYNC="checksum backup chưa đồng bộ (DB lệch schema — đúng thiết kế)"
+            fi
+          fi
+
+          echo "sync=$SYNC" >> $GITHUB_OUTPUT
           echo "applied=$APPLIED/$EXPECTED" >> $GITHUB_OUTPUT
           echo "tables=$TABLES" >> $GITHUB_OUTPUT
           if [ -n "$FAIL" ]; then
@@ -551,6 +573,7 @@ jobs:
           MIGRATOR: ${{ steps.migrator.outputs.status }}
           MIGRATOR_APPLIED: ${{ steps.migrator.outputs.applied }}
           MIGRATOR_TABLES: ${{ steps.migrator.outputs.tables }}
+          MIGRATOR_SYNC: ${{ steps.migrator.outputs.sync }}
         run: |
           # Verify đánh dấu failed nhưng step vẫn exit 0 → bước "Fail if verification failed" chưa chạy
           if [ "$JOB_STATUS" = "success" ] && [ "$VERIFY" != "failed" ]; then RESULT="✅ Passed"; else RESULT="❌ Failed"; fi
@@ -575,7 +598,7 @@ jobs:
             *)       DOCKER_TXT="⏭️ Not run" ;;
           esac
           case "$MIGRATOR" in
-            passed)  MIGRATOR_TXT="✅ $MIGRATOR_APPLIED migration, $MIGRATOR_TABLES bảng; chạy lại up-to-date" ;;
+            passed)  MIGRATOR_TXT="✅ $MIGRATOR_APPLIED migration, $MIGRATOR_TABLES bảng; chạy lại up-to-date${MIGRATOR_SYNC:+; $MIGRATOR_SYNC}" ;;
             failed)  MIGRATOR_TXT="❌ Failed ($MIGRATOR_APPLIED migration)" ;;
             skipped) MIGRATOR_TXT="⚠️ Bỏ qua — thiếu secret ACTIVATION_KEY" ;;
             *)       MIGRATOR_TXT="⏭️ Not run" ;;
