@@ -184,6 +184,9 @@ jobs:
       STATUS_CONTEXT: Database Test
       # Repo database được checkout ở thư mục gốc (standalone)
       DB_ROOT: .
+      # true = schema lệch thì job FAIL. Đang false vì schema.prisma vẫn còn lệch so với migrations
+      # (FK ON DELETE, PK zalo_*, kiểu cột) — sửa hết rồi bật true.
+      SCHEMA_DRIFT_STRICT: 'false'
     steps:
       # Token ngắn hạn từ GitHub App (giống claude.yml), thay cho PAT.
       # - read-token: đọc repo nguồn + submodule (contents: read).
@@ -335,6 +338,29 @@ jobs:
             exit 1
           fi
 
+      # So DB thật (sau migrate) với schema.prisma: lệch = migration thiếu/sai hoặc schema.prisma sửa
+      # mà không tạo migration (exit-code: 0 khớp, 2 lệch, 1 lỗi).
+      - name: Check schema drift (DB vs schema.prisma)
+        id: drift
+        if: steps.migrate.outputs.status == 'passed'
+        run: |
+          set +e
+          bunx prisma migrate diff --from-config-datasource --to-schema schema.prisma \
+            --script --exit-code > schema-drift.sql 2> schema-drift.err
+          rc=$?
+          set -e
+          COUNT=$(grep -c '^-- ' schema-drift.sql || true)
+          case $rc in
+            0) STATUS=clean;  echo "✅ DB khớp schema.prisma" ;;
+            2) STATUS=drift;  echo "::warning title=Schema drift::schema.prisma lệch DB sau migrate ($COUNT thay đổi) — xem schema-drift.sql trong báo cáo"
+               cat schema-drift.sql ;;
+            *) STATUS=error;  echo "::warning title=Schema drift::Không chạy được prisma migrate diff"
+               cat schema-drift.err ;;
+          esac
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          if [ "$STATUS" != "clean" ] && [ "$SCHEMA_DRIFT_STRICT" = "true" ]; then exit 1; fi
+
       - name: Run seed (only if no backup)
         id: seed
         if: steps.backup.outputs.found == 'false'
@@ -423,6 +449,8 @@ jobs:
           ADMIN_EXISTS: ${{ steps.verify.outputs.admin_exists }}
           FK_COUNT: ${{ steps.verify.outputs.fk_count }}
           DB_VERSION: ${{ matrix.mariadb }}
+          DRIFT: ${{ steps.drift.outputs.status }}
+          DRIFT_COUNT: ${{ steps.drift.outputs.count }}
         run: |
           # Verify đánh dấu failed nhưng step vẫn exit 0 → bước "Fail if verification failed" chưa chạy
           if [ "$JOB_STATUS" = "success" ] && [ "$VERIFY" != "failed" ]; then RESULT="✅ Passed"; else RESULT="❌ Failed"; fi
@@ -435,6 +463,12 @@ jobs:
           fi
           [ -z "$MISSING_TABLES" ] && MISSING_TXT="✅ None" || MISSING_TXT="$MISSING_TABLES"
           [ "$ADMIN_EXISTS" = "1" ] && ADMIN_TXT="✅ exists" || ADMIN_TXT="❌ missing"
+          case "$DRIFT" in
+            clean) DRIFT_TXT="✅ Khớp schema.prisma" ;;
+            drift) DRIFT_TXT="⚠️ Lệch ($DRIFT_COUNT thay đổi)" ;;
+            error) DRIFT_TXT="⚠️ Không kiểm tra được" ;;
+            *)     DRIFT_TXT="⏭️ Not run" ;;
+          esac
           {
             echo "## 🗄️ Database Migration Test Results — $RESULT"
             echo
@@ -452,7 +486,18 @@ jobs:
             echo "| **System Info** | $SYSTEM_INFO |"
             echo "| **Admin user** | $ADMIN_TXT |"
             echo "| **FK constraints** | $FK_COUNT |"
+            echo "| **Schema drift** | $DRIFT_TXT |"
             echo
+            if [ "$DRIFT" = "drift" ]; then
+              echo "<details>"
+              echo "<summary>Schema drift — SQL để DB khớp schema.prisma</summary>"
+              echo
+              echo '```sql'
+              cat schema-drift.sql
+              echo '```'
+              echo "</details>"
+              echo
+            fi
             echo "<details>"
             echo "<summary>Migration output</summary>"
             echo
