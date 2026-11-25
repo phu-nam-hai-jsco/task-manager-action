@@ -311,7 +311,7 @@ jobs:
           sparse-checkout: .github/scripts
           fetch-depth: 1
 
-      # Báo cáo chi tiết: tổng Line/Branch, bảng theo cụm, file cần bổ sung test (comment PR) và
+      # Báo cáo chi tiết: tổng Line/Function/Branch (bun test không đo branch → bảng dùng Function), bảng theo cụm, file cần bổ sung test (comment PR) và
       # bảng đầy đủ mọi file (Job Summary). Ngưỡng: ✅ ≥ 80% · ⚠️ 50–79% · ❌ < 50% (line coverage).
       - name: Code Coverage Summary & Extract percentage
         id: coverage
