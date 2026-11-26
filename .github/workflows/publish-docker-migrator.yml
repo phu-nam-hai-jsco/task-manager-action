@@ -1,6 +1,6 @@
 name: Docker Publish Migrator Build
 run-name: "${{ github.workflow }} · ${{ inputs.branch || github.event.client_payload.branch || 'main' }} · ${{ inputs.version || github.event.client_payload.version || 'auto' }} · ${{ inputs.ref || github.event.client_payload.ref || github.sha }}"
-# Reusable workflow — được caller (phu-nam-hai-jsco/work-management) gọi qua `uses:`.
+# Build image từ repo thành phần theo TÊN NHÁNH bắt buộc (ref) — không theo dõi repo chính work-management.
 # Build image DB migrator (Prisma migrate deploy) từ `Dockerfile` trong repo `database`.
 
 on:
@@ -58,9 +58,9 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Git ref of the caller repo to checkout/build (vd: dev, main, sha)'
+        description: 'BẮT BUỘC — nhánh của repo thành phần cần build (vd: main, dev)'
         type: string
-        required: false
+        required: true
         default: ''
       pr_number:
         description: 'PR number for report/comment flows'
@@ -83,7 +83,7 @@ on:
         required: false
         default: ''
       source_repository:
-        description: 'Repo chua source can build (mac dinh phu-nam-hai-jsco/work-management)'
+        description: 'Repo source cần build (mặc định phu-nam-hai-jsco/task-manager-database)'
         type: string
         required: false
         default: ''
@@ -122,7 +122,7 @@ env:
   IN_REF: ${{ github.event.action == 'build-docker-migrator' && github.event.client_payload.ref || inputs.ref }}
   IN_VERSION: ${{ github.event.action == 'build-docker-migrator' && github.event.client_payload.version || inputs.version }}
   IN_BRANCH: ${{ (github.event.action == 'build-docker-migrator' && github.event.client_payload.branch || inputs.branch) || 'main' }}
-  IN_SOURCE_REPOSITORY: ${{ github.event.action == 'build-docker-migrator' && (github.event.client_payload.source_repository || 'phu-nam-hai-jsco/work-management') || inputs.source_repository || github.repository }}
+  IN_SOURCE_REPOSITORY: ${{ github.event.action == 'build-docker-migrator' && (github.event.client_payload.source_repository || 'phu-nam-hai-jsco/task-manager-database') || inputs.source_repository || 'phu-nam-hai-jsco/task-manager-database' }}
   IN_STAGED: ${{ github.event.action == 'build-docker-migrator' || inputs.staged == true }}
   REGISTRY: ghcr.io
   # Ảnh publish về namespace của caller repo (GITHUB_TOKEN + packages:write đủ quyền push)
@@ -183,31 +183,32 @@ jobs:
 
       # Chỉ checkout đúng 1 repo là database (không checkout repo chính hay docker):
       # database/Dockerfile + license-gate.sh + scripts đã tự đủ để build standalone.
-      - name: Resolve pinned commit of database
+      - name: Resolve source of database
         id: pins
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SRC_REPO: ${{ env.IN_SOURCE_REPOSITORY }}
-          SRC_REF: ${{ env.IN_REF || github.sha }}
+          SRC_REF: ${{ env.IN_REF }}
         run: |
           set -euo pipefail
+          # Build THẲNG repo thành phần theo TÊN NHÁNH do caller truyền — không theo dõi repo chính
+          # (work-management) và không đọc con trỏ submodule. `ref` là BẮT BUỘC.
+          if [ -z "$SRC_REF" ]; then
+            echo "::error::Thiếu ref (tên nhánh cần build) — caller phải truyền ref, vd main/dev"
+            exit 1
+          fi
+          if [[ "$SRC_REF" == -* ]] || [[ "$SRC_REF" == *".."* ]] || [[ ! "$SRC_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::ref không hợp lệ: $SRC_REF"
+            exit 1
+          fi
           case "$SRC_REPO" in
             */task-manager-database|*/work-management-database)
               echo "database_repo=${SRC_REPO}" >> "$GITHUB_OUTPUT"
               echo "database_sha=${SRC_REF}" >> "$GITHUB_OUTPUT"
-              echo "database: ${SRC_REPO}@${SRC_REF} (direct)"
+              echo "database: ${SRC_REPO}@${SRC_REF}"
               ;;
             *)
-              info=$(gh api "repos/${SRC_REPO}/contents/database?ref=${SRC_REF}" --jq '[.type, .sha, .submodule_git_url] | @tsv')
-              type=$(echo "$info" | cut -f1); sha=$(echo "$info" | cut -f2); url=$(echo "$info" | cut -f3)
-              if [ "$type" != "submodule" ] || [ -z "$sha" ] || [ -z "$url" ]; then
-                echo "::error::'database' tại ${SRC_REPO}@${SRC_REF} không phải submodule hợp lệ (type=${type})"
-                exit 1
-              fi
-              repo=$(echo "$url" | sed -E 's#^https://github.com/##; s#\.git$##')
-              echo "database_repo=${repo}" >> "$GITHUB_OUTPUT"
-              echo "database_sha=${sha}" >> "$GITHUB_OUTPUT"
-              echo "database: ${repo}@${sha}"
+              echo "::error::source_repository phải là repo database (phu-nam-hai-jsco/task-manager-database), nhận '${SRC_REPO}' — task-manager-action không build qua repo chính"
+              exit 1
               ;;
           esac
 
